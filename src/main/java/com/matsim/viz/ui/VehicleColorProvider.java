@@ -22,7 +22,9 @@ public final class VehicleColorProvider {
             new Color(0x17BECF),
             new Color(0x9467BD),
             new Color(0x8C564B),
-            new Color(0xE377C2)
+            new Color(0xE377C2),
+            new Color(0x11116B),
+            new Color(0x003300),
     };
 
     private final Map<String, Color> modeColors = new HashMap<>();
@@ -34,13 +36,23 @@ public final class VehicleColorProvider {
             new Color(0x2BB673),
             new Color(0x00A6FB),
             new Color(0xFF8C42),
-            new Color(0xD7263D)
+            new Color(0xD7263D),
+            new Color(0xff00ff),
+            new Color(0x330033)
         };
 
     public VehicleColorProvider() {
         modeColors.put("car", DEFAULT_CAR_MODE_COLOR);
         modeColors.put("bike", DEFAULT_BIKE_MODE_COLOR);
-        sexColors.put("male", new Color(0x2E86FF));
+        modeColors.put("bus", new Color(0xFFAA00));
+        modeColors.put("tram", new Color(0x00BB44));
+        modeColors.put("rail", new Color(0xDD3333));
+        modeColors.put("train", new Color(0xDD3333));
+        modeColors.put("subway", new Color(0x0077CC));
+        modeColors.put("metro", new Color(0x0077CC));
+        modeColors.put("ferry", new Color(0x00AACC));
+        modeColors.put("funicular", new Color(0x8855BB));
+        sexColors.put("male", new Color(0x11116B));
         sexColors.put("female", new Color(0xFF4FA3));
         sexColors.put("other", new Color(0xFFC857));
         sexColors.put("unknown", new Color(0x9A9A9A));

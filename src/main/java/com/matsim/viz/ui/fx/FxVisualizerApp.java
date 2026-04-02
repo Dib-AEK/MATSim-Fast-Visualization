@@ -23,6 +23,7 @@ import javafx.scene.control.Label;
 import javafx.scene.control.ScrollPane;
 import javafx.scene.control.Slider;
 import javafx.scene.control.TextField;
+import javafx.scene.control.TitledPane;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
@@ -245,7 +246,7 @@ public final class FxVisualizerApp extends Application {
             if (geometrySettingsWindow[0] == null) {
                 geometrySettingsWindow[0] = createSettingsWindow(
                         owner, "Vehicle Geometry",
-                        buildGeometrySettingsContent(networkPanel), 460, 620);
+                        buildGeometrySettingsContent(networkPanel), 460, 860);
                 geometrySettingsWindow[0].setOnHidden(event -> geometrySettingsWindow[0] = null);
             }
             geometrySettingsWindow[0].show();
@@ -332,13 +333,15 @@ public final class FxVisualizerApp extends Application {
         return window;
     }
 
-    private VBox buildModeSelectionCard(
+    private TitledPane buildModeSelectionCard(
             String title,
             List<String> modes,
             Set<String> defaultSelected,
             Consumer<Set<String>> onSelectionChanged
     ) {
-        VBox card = createCard(title);
+        VBox body = new VBox(4);
+        body.getStyleClass().add("rows");
+        body.setPadding(new Insets(6));
 
         HBox header = new HBox(8);
         Button allButton = new Button("All");
@@ -370,8 +373,13 @@ public final class FxVisualizerApp extends Application {
 
         publishSelections(boxes, onSelectionChanged);
 
-        card.getChildren().addAll(header, checks);
-        return card;
+        body.getChildren().addAll(header, checks);
+
+        TitledPane titledPane = new TitledPane(title, body);
+        titledPane.setExpanded(false);
+        titledPane.setAnimated(true);
+        titledPane.getStyleClass().add("card");
+        return titledPane;
     }
 
     private VBox buildModeColorCard(List<String> modes, NetworkPanel networkPanel) {
@@ -572,6 +580,42 @@ public final class FxVisualizerApp extends Application {
             truckWidthValue.setText(String.format("%.2f", newValue.doubleValue()));
         });
 
+        Label busLabel = new Label("Bus length (m)");
+        Slider busSlider = new Slider(4, 25, getOnEdt(networkPanel::getBusVehicleLengthMeters));
+        Label busValue = new Label(String.format("%.1f", busSlider.getValue()));
+        busValue.getStyleClass().add("mono-value");
+        busSlider.valueProperty().addListener((obs, oldValue, newValue) -> {
+            runOnEdt(() -> networkPanel.setBusVehicleLengthMeters(newValue.doubleValue()));
+            busValue.setText(String.format("%.1f", newValue.doubleValue()));
+        });
+
+        Label busWidthLabel = new Label("Bus width ratio");
+        Slider busWidthSlider = new Slider(0.10, 2.00, getOnEdt(networkPanel::getBusVehicleWidthRatio));
+        Label busWidthValue = new Label(String.format("%.2f", busWidthSlider.getValue()));
+        busWidthValue.getStyleClass().add("mono-value");
+        busWidthSlider.valueProperty().addListener((obs, oldValue, newValue) -> {
+            runOnEdt(() -> networkPanel.setBusVehicleWidthRatio(newValue.doubleValue()));
+            busWidthValue.setText(String.format("%.2f", newValue.doubleValue()));
+        });
+
+        Label railLabel = new Label("Rail/Tram length (m)");
+        Slider railSlider = new Slider(5, 100, getOnEdt(networkPanel::getRailVehicleLengthMeters));
+        Label railValue = new Label(String.format("%.1f", railSlider.getValue()));
+        railValue.getStyleClass().add("mono-value");
+        railSlider.valueProperty().addListener((obs, oldValue, newValue) -> {
+            runOnEdt(() -> networkPanel.setRailVehicleLengthMeters(newValue.doubleValue()));
+            railValue.setText(String.format("%.1f", newValue.doubleValue()));
+        });
+
+        Label railWidthLabel = new Label("Rail/Tram width ratio");
+        Slider railWidthSlider = new Slider(0.10, 2.00, getOnEdt(networkPanel::getRailVehicleWidthRatio));
+        Label railWidthValue = new Label(String.format("%.2f", railWidthSlider.getValue()));
+        railWidthValue.getStyleClass().add("mono-value");
+        railWidthSlider.valueProperty().addListener((obs, oldValue, newValue) -> {
+            runOnEdt(() -> networkPanel.setRailVehicleWidthRatio(newValue.doubleValue()));
+            railWidthValue.setText(String.format("%.2f", newValue.doubleValue()));
+        });
+
         CheckBox visibilityBoost = new CheckBox("Keep vehicles noticeable when zoomed out");
         visibilityBoost.setSelected(getOnEdt(networkPanel::isKeepVehiclesVisibleWhenZoomedOut));
         visibilityBoost.setOnAction(e -> runOnEdt(() ->
@@ -603,6 +647,10 @@ public final class FxVisualizerApp extends Application {
                 bikeWidthLabel, bikeWidthSlider, bikeWidthValue,
                 truckLabel, truckSlider, truckValue,
                 truckWidthLabel, truckWidthSlider, truckWidthValue,
+                busLabel, busSlider, busValue,
+                busWidthLabel, busWidthSlider, busWidthValue,
+                railLabel, railSlider, railValue,
+                railWidthLabel, railWidthSlider, railWidthValue,
                 visibilityBoost,
                 minLengthPxLabel, minLengthPxSlider, minLengthPxValue,
                 minWidthPxLabel, minWidthPxSlider, minWidthPxValue
@@ -661,14 +709,11 @@ public final class FxVisualizerApp extends Application {
 
     private static Set<String> defaultTransportModes(List<String> availableModes) {
         Set<String> selected = new LinkedHashSet<>();
+        Set<String> defaults = Set.of("car", "bike", "bicycle", "truck", "freight", "hdv",
+                "bus", "tram", "rail", "train", "subway", "metro", "ferry", "funicular");
         for (String mode : availableModes) {
             String normalized = normalizeMode(mode);
-            if (normalized.equals("car")
-                    || normalized.equals("bike")
-                    || normalized.equals("bicycle")
-                    || normalized.equals("truck")
-                    || normalized.equals("freight")
-                    || normalized.equals("hdv")) {
+            if (defaults.contains(normalized)) {
                 selected.add(normalized);
             }
         }

@@ -12,6 +12,7 @@ public record ResolvedSimulationInputs(
         Path tripsFile,
         Path outputPersonsFile,
         Path outputPlansFile,
+        Path transitScheduleFile,
         Config matsimConfig
 ) {
 }

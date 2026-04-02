@@ -14,7 +14,7 @@ import java.util.HexFormat;
 import java.util.List;
 
 public final class SimulationFingerprint {
-    private static final String CACHE_SCHEMA = "mviz-cache-v4";
+    private static final String CACHE_SCHEMA = "mviz-cache-v5";
 
     private SimulationFingerprint() {
     }
@@ -37,6 +37,9 @@ public final class SimulationFingerprint {
             }
             if (inputs.outputPlansFile() != null) {
                 sourceFiles.add(inputs.outputPlansFile());
+            }
+            if (inputs.transitScheduleFile() != null) {
+                sourceFiles.add(inputs.transitScheduleFile());
             }
             sourceFiles.sort(Comparator.comparing(path -> path.toAbsolutePath().normalize().toString()));
 

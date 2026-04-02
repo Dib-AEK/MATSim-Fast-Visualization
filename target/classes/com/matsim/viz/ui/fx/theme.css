@@ -151,3 +151,32 @@
 .danger-button:hover {
     -fx-background-color: linear-gradient(to right, #ef4444, #ff6b6b);
 }
+
+.titled-pane {
+    -fx-text-fill: #8ec8ff;
+}
+
+.titled-pane > .title {
+    -fx-background-color: rgba(14, 20, 31, 0.85);
+    -fx-border-color: rgba(69, 82, 105, 0.70);
+    -fx-background-radius: 12 12 0 0;
+    -fx-border-radius: 12 12 0 0;
+    -fx-padding: 8 12 8 12;
+}
+
+.titled-pane:collapsed > .title {
+    -fx-background-radius: 12;
+    -fx-border-radius: 12;
+}
+
+.titled-pane > .title > .arrow-button .arrow {
+    -fx-background-color: #8ec8ff;
+}
+
+.titled-pane > *.content {
+    -fx-background-color: rgba(14, 20, 31, 0.85);
+    -fx-border-color: rgba(69, 82, 105, 0.70);
+    -fx-border-width: 0 1 1 1;
+    -fx-background-radius: 0 0 12 12;
+    -fx-border-radius: 0 0 12 12;
+}

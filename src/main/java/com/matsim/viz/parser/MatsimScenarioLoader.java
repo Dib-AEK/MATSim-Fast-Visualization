@@ -29,6 +29,7 @@ public final class MatsimScenarioLoader {
         Path tripsFile = resolveTripsFile(appConfig, matsimConfigPath, matsimConfig);
         Path outputPersonsFile = resolveOutputPersonsFile(matsimConfigPath, matsimConfig);
         Path outputPlansFile = resolveOutputPlansFile(matsimConfigPath, matsimConfig);
+        Path transitScheduleFile = resolveTransitScheduleFile(matsimConfigPath, matsimConfig);
 
         return new ResolvedSimulationInputs(
                 matsimConfigPath,
@@ -38,6 +39,7 @@ public final class MatsimScenarioLoader {
                 tripsFile,
                 outputPersonsFile,
                 outputPlansFile,
+                transitScheduleFile,
                 matsimConfig
         );
     }
@@ -192,6 +194,40 @@ public final class MatsimScenarioLoader {
         if (runId != null && !runId.isBlank()) {
             candidates.add(outputDir.resolve(runId + ".output_persons.csv.gz"));
             candidates.add(outputDir.resolve(runId + ".output_persons.csv"));
+        }
+
+        for (Path candidate : candidates) {
+            if (Files.exists(candidate)) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
+    private static Path resolveTransitScheduleFile(Path matsimConfigPath, Config matsimConfig) {
+        Path outputDir = outputDirectory(matsimConfigPath, matsimConfig);
+        String runId = matsimConfig.controller().getRunId();
+
+        List<Path> candidates = new ArrayList<>();
+        candidates.add(outputDir.resolve("output_transitSchedule.xml.gz"));
+        candidates.add(outputDir.resolve("output_transitSchedule.xml"));
+        if (runId != null && !runId.isBlank()) {
+            candidates.add(outputDir.resolve(runId + ".output_transitSchedule.xml.gz"));
+            candidates.add(outputDir.resolve(runId + ".output_transitSchedule.xml"));
+        }
+
+        // Also check the input transit schedule from config
+        String configSchedule = matsimConfig.transit().getTransitScheduleFile();
+        if (configSchedule != null && !configSchedule.isBlank()) {
+            Path configSchedulePath = Path.of(configSchedule);
+            if (configSchedulePath.isAbsolute()) {
+                candidates.add(configSchedulePath);
+            } else {
+                Path configDir = matsimConfigPath.getParent();
+                if (configDir != null) {
+                    candidates.add(configDir.resolve(configSchedulePath).normalize());
+                }
+            }
         }
 
         for (Path candidate : candidates) {

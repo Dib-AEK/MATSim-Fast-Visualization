@@ -23,7 +23,7 @@ import java.util.zip.GZIPOutputStream;
 
 public final class SimulationCacheStore {
     private static final int MAGIC = 0x4D565A31; // MVZ1
-    private static final int VERSION = 4;
+    private static final int VERSION = 5;
 
     private final Path cacheDir;
 

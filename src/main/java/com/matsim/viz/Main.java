@@ -14,11 +14,13 @@ import com.matsim.viz.parser.MatsimScenarioBundle;
 import com.matsim.viz.parser.MatsimScenarioLoader;
 import com.matsim.viz.parser.PlansXmlPurposeTimelineParser;
 import com.matsim.viz.parser.ResolvedSimulationInputs;
+import com.matsim.viz.parser.TransitScheduleParser;
 import com.matsim.viz.parser.TripsPurposeTimelineParser;
 import com.matsim.viz.ui.fx.FxVisualizerApp;
 
 import java.nio.file.Path;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -52,6 +54,7 @@ public final class Main {
         System.out.println("Trips       : " + (inputs.tripsFile() == null ? "(not found)" : inputs.tripsFile()));
         System.out.println("Persons     : " + (inputs.outputPersonsFile() == null ? "(not found)" : inputs.outputPersonsFile()));
         System.out.println("Output plans: " + (inputs.outputPlansFile() == null ? "(not found)" : inputs.outputPlansFile()));
+        System.out.println("Transit sched: " + (inputs.transitScheduleFile() == null ? "(not found)" : inputs.transitScheduleFile()));
         System.out.println("Cache key   : " + cacheKey);
 
         CachedSimulationData cached;
@@ -73,11 +76,20 @@ public final class Main {
             EventsParseResult events = new MatsimEventsProcessor().readTraversals(inputs.eventsFile());
             long t3 = System.nanoTime();
 
+            Map<String, String> mergedVehicleToMode = new HashMap<>(events.vehicleToMode());
+            if (inputs.transitScheduleFile() != null) {
+                long ptStart = System.nanoTime();
+                Map<String, String> ptModes = TransitScheduleParser.parseVehicleModes(inputs.transitScheduleFile());
+                mergedVehicleToMode.putAll(ptModes);
+                System.out.printf("Parsed transit schedule in %.2fs (%d PT vehicles)%n",
+                        seconds(System.nanoTime() - ptStart), ptModes.size());
+            }
+
             cached = new CachedSimulationData(
                     scenarioBundle.networkData(),
                     events.traversals(),
                     events.vehicleToPerson(),
-                    events.vehicleToMode(),
+                    mergedVehicleToMode,
                     scenarioBundle.metadataByPerson()
             );
 

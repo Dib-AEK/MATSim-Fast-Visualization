@@ -38,9 +38,13 @@ public final class NetworkPanel extends JPanel {
     private static final double DEFAULT_CAR_LIKE_LENGTH_METERS = 7.0;
     private static final double DEFAULT_BIKE_LENGTH_METERS = 3.0;
     private static final double DEFAULT_TRUCK_LENGTH_METERS = 10.0;
+    private static final double DEFAULT_BUS_LENGTH_METERS = 12.0;
+    private static final double DEFAULT_RAIL_LENGTH_METERS = 30.0;
     private static final double DEFAULT_CAR_WIDTH_RATIO = 0.70;
     private static final double DEFAULT_BIKE_WIDTH_RATIO = 0.30;
     private static final double DEFAULT_TRUCK_WIDTH_RATIO = 0.95;
+    private static final double DEFAULT_BUS_WIDTH_RATIO = 0.85;
+    private static final double DEFAULT_RAIL_WIDTH_RATIO = 0.90;
     private static final double MIN_VEHICLE_LENGTH_METERS = 0.8;
 
     private static final Color MAP_BACKGROUND = new Color(0x060606);
@@ -57,19 +61,23 @@ public final class NetworkPanel extends JPanel {
     private final Map<String, LinkScreenGeometry> linkScreenGeometries = new HashMap<>();
 
     private ColorMode colorMode = ColorMode.DEFAULT;
-    private boolean showQueues = true;
+    private boolean showQueues = false;
     private boolean showBottleneck;
     private double bottleneckDivisor = 6.0;
     private double sampleSize = 1.0;
     private double carLikeVehicleLengthMeters = DEFAULT_CAR_LIKE_LENGTH_METERS;
     private double bikeVehicleLengthMeters = DEFAULT_BIKE_LENGTH_METERS;
     private double truckVehicleLengthMeters = DEFAULT_TRUCK_LENGTH_METERS;
+    private double busVehicleLengthMeters = DEFAULT_BUS_LENGTH_METERS;
+    private double railVehicleLengthMeters = DEFAULT_RAIL_LENGTH_METERS;
     private double carLikeVehicleWidthRatio = DEFAULT_CAR_WIDTH_RATIO;
     private double bikeVehicleWidthRatio = DEFAULT_BIKE_WIDTH_RATIO;
     private double truckVehicleWidthRatio = DEFAULT_TRUCK_WIDTH_RATIO;
-    private boolean keepVehiclesVisibleWhenZoomedOut;
-    private double minVehicleLengthPixels = 1.2;
-    private double minVehicleWidthPixels = 0.8;
+    private double busVehicleWidthRatio = DEFAULT_BUS_WIDTH_RATIO;
+    private double railVehicleWidthRatio = DEFAULT_RAIL_WIDTH_RATIO;
+    private boolean keepVehiclesVisibleWhenZoomedOut = true;
+    private double minVehicleLengthPixels = 2.5;
+    private double minVehicleWidthPixels = 1.2;
 
     private double zoom = 1.0;
     private double panX = 20.0;
@@ -307,6 +315,42 @@ public final class NetworkPanel extends JPanel {
         return truckVehicleWidthRatio;
     }
 
+    public void setBusVehicleLengthMeters(double value) {
+        this.busVehicleLengthMeters = Math.max(2.0, value);
+        repaint();
+    }
+
+    public double getBusVehicleLengthMeters() {
+        return busVehicleLengthMeters;
+    }
+
+    public void setBusVehicleWidthRatio(double ratio) {
+        this.busVehicleWidthRatio = clampWidthRatio(ratio);
+        repaint();
+    }
+
+    public double getBusVehicleWidthRatio() {
+        return busVehicleWidthRatio;
+    }
+
+    public void setRailVehicleLengthMeters(double value) {
+        this.railVehicleLengthMeters = Math.max(5.0, value);
+        repaint();
+    }
+
+    public double getRailVehicleLengthMeters() {
+        return railVehicleLengthMeters;
+    }
+
+    public void setRailVehicleWidthRatio(double ratio) {
+        this.railVehicleWidthRatio = clampWidthRatio(ratio);
+        repaint();
+    }
+
+    public double getRailVehicleWidthRatio() {
+        return railVehicleWidthRatio;
+    }
+
     public void setKeepVehiclesVisibleWhenZoomedOut(boolean enabled) {
         this.keepVehiclesVisibleWhenZoomedOut = enabled;
         repaint();
@@ -502,6 +546,8 @@ public final class NetworkPanel extends JPanel {
 
                 List<Integer> bikeTraversals = new ArrayList<>();
                 List<Integer> truckTraversals = new ArrayList<>();
+                List<Integer> busTraversals = new ArrayList<>();
+                List<Integer> railTraversals = new ArrayList<>();
                 List<Integer> carLikeTraversals = new ArrayList<>();
             for (int traversalIndex : linkTraversals) {
                 String mode = model.vehicleToMode().get(model.traversalVehicleId(traversalIndex));
@@ -509,6 +555,10 @@ public final class NetworkPanel extends JPanel {
                     bikeTraversals.add(traversalIndex);
                 } else if (isTruckMode(mode)) {
                     truckTraversals.add(traversalIndex);
+                } else if (isBusMode(mode)) {
+                    busTraversals.add(traversalIndex);
+                } else if (isRailMode(mode)) {
+                    railTraversals.add(traversalIndex);
                 } else {
                     carLikeTraversals.add(traversalIndex);
                 }
@@ -517,6 +567,8 @@ public final class NetworkPanel extends JPanel {
                 carLikeTraversals.sort(Comparator.comparingDouble((Integer idx) -> naturalProgress(idx, currentTime)).reversed());
                 truckTraversals.sort(Comparator.comparingDouble((Integer idx) -> naturalProgress(idx, currentTime)).reversed());
             bikeTraversals.sort(Comparator.comparingDouble((Integer idx) -> naturalProgress(idx, currentTime)).reversed());
+            busTraversals.sort(Comparator.comparingDouble((Integer idx) -> naturalProgress(idx, currentTime)).reversed());
+            railTraversals.sort(Comparator.comparingDouble((Integer idx) -> naturalProgress(idx, currentTime)).reversed());
 
             drawModeGroup(
                     g2,
@@ -543,6 +595,32 @@ public final class NetworkPanel extends JPanel {
                     true,
                     linkIsBottleneck
                 );
+
+            drawModeGroup(
+                    g2,
+                    geometry,
+                    link,
+                    busTraversals,
+                    currentTime,
+                    busVehicleLengthMeters,
+                    busVehicleWidthRatio,
+                    0.15,
+                    true,
+                    linkIsBottleneck
+            );
+
+            drawModeGroup(
+                    g2,
+                    geometry,
+                    link,
+                    railTraversals,
+                    currentTime,
+                    railVehicleLengthMeters,
+                    railVehicleWidthRatio,
+                    0.0,
+                    true,
+                    linkIsBottleneck
+            );
 
             drawModeGroup(
                     g2,
@@ -890,6 +968,28 @@ public final class NetworkPanel extends JPanel {
                 || normalized.contains("freight");
     }
 
+    private static boolean isBusMode(String mode) {
+        if (mode == null) {
+            return false;
+        }
+        String normalized = normalizeMode(mode);
+        return normalized.equals("bus");
+    }
+
+    private static boolean isRailMode(String mode) {
+        if (mode == null) {
+            return false;
+        }
+        String normalized = normalizeMode(mode);
+        return normalized.equals("tram")
+                || normalized.equals("train")
+                || normalized.equals("rail")
+                || normalized.equals("subway")
+                || normalized.equals("metro")
+                || normalized.equals("ferry")
+                || normalized.equals("funicular");
+    }
+
     private static double clampWidthRatio(double value) {
         return Math.max(0.10, Math.min(2.0, value));
     }
@@ -904,14 +1004,11 @@ public final class NetworkPanel extends JPanel {
 
     private static Set<String> defaultTransportModes(List<String> availableModes) {
         Set<String> selected = new HashSet<>();
+        Set<String> defaults = Set.of("car", "bike", "bicycle", "truck", "freight", "hdv",
+                "bus", "tram", "rail", "train", "subway", "metro", "ferry", "funicular");
         for (String mode : availableModes) {
             String normalized = normalizeMode(mode);
-            if (normalized.equals("car")
-                    || normalized.equals("bike")
-                    || normalized.equals("bicycle")
-                    || normalized.equals("truck")
-                    || normalized.equals("freight")
-                    || normalized.equals("hdv")) {
+            if (defaults.contains(normalized)) {
                 selected.add(normalized);
             }
         }
