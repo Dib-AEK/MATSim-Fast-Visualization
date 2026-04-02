@@ -1,0 +1,153 @@
+.app-root {
+    -fx-background-color: linear-gradient(to bottom, #0d1117 0%, #111827 48%, #0f172a 100%);
+    -fx-font-family: "Segoe UI Variable", "Aptos", "Poppins", "Helvetica Neue", sans-serif;
+}
+
+.top-wrap {
+    -fx-background-color: transparent;
+}
+
+.toolbar {
+    -fx-background-color: rgba(13, 18, 28, 0.88);
+    -fx-border-color: rgba(74, 87, 108, 0.50);
+    -fx-border-width: 0 0 1 0;
+    -fx-effect: dropshadow(three-pass-box, rgba(0, 0, 0, 0.45), 18, 0.2, 0, 2);
+}
+
+.label {
+    -fx-text-fill: #d7dde7;
+}
+
+.field-caption {
+    -fx-font-size: 12px;
+    -fx-text-fill: #9aa8bf;
+    -fx-font-weight: 600;
+}
+
+.mono-value {
+    -fx-font-family: "Cascadia Mono", "Consolas", monospace;
+    -fx-font-weight: 600;
+    -fx-text-fill: #e9eef8;
+}
+
+.button {
+    -fx-background-radius: 10;
+    -fx-border-radius: 10;
+    -fx-padding: 6 12 6 12;
+    -fx-background-color: #2b3445;
+    -fx-text-fill: #e7edf7;
+    -fx-border-color: #3f4d64;
+}
+
+.button:hover {
+    -fx-background-color: #34425a;
+}
+
+.accent-button {
+    -fx-background-color: linear-gradient(to right, #1473e6, #1490e6);
+    -fx-border-color: #2fa6ff;
+    -fx-font-weight: 700;
+}
+
+.accent-button:hover {
+    -fx-background-color: linear-gradient(to right, #1a7df8, #1aa0fb);
+}
+
+.ghost-button {
+    -fx-background-color: #1f2734;
+    -fx-border-color: #3a465c;
+    -fx-padding: 4 10 4 10;
+}
+
+.check-box {
+    -fx-text-fill: #cfd8e8;
+}
+
+.check-box .box {
+    -fx-background-color: #1d2532;
+    -fx-border-color: #4a5a74;
+    -fx-border-radius: 4;
+    -fx-background-radius: 4;
+}
+
+.combo-box,
+.slider,
+.text-field,
+.color-picker {
+    -fx-accent: #2ca5ff;
+}
+
+.combo-box,
+.text-field {
+    -fx-background-color: #141c28;
+    -fx-text-fill: #e4ebf5;
+    -fx-border-color: #344157;
+    -fx-border-radius: 8;
+    -fx-background-radius: 8;
+}
+
+.combo-box .list-cell,
+.combo-box-popup .list-cell {
+    -fx-background-color: #141c28;
+    -fx-text-fill: #e4ebf5;
+}
+
+.combo-box-popup .list-view {
+    -fx-background-color: #141c28;
+    -fx-border-color: #344157;
+}
+
+.side-scroll {
+    -fx-background: transparent;
+    -fx-background-color: transparent;
+    -fx-border-color: rgba(74, 87, 108, 0.45);
+    -fx-border-width: 0 0 0 1;
+}
+
+.side-scroll > .viewport {
+    -fx-background-color: transparent;
+}
+
+.side-content {
+    -fx-background-color: transparent;
+}
+
+.card {
+    -fx-background-color: rgba(14, 20, 31, 0.85);
+    -fx-border-color: rgba(69, 82, 105, 0.70);
+    -fx-background-radius: 12;
+    -fx-border-radius: 12;
+    -fx-padding: 12;
+}
+
+.card-title {
+    -fx-font-size: 13px;
+    -fx-text-fill: #8ec8ff;
+    -fx-font-weight: 700;
+}
+
+.rows {
+    -fx-padding: 2 0 0 0;
+}
+
+.hint {
+    -fx-text-fill: #90a0b7;
+    -fx-font-size: 12px;
+}
+
+.bottom-bar {
+    -fx-background-color: rgba(12, 17, 26, 0.90);
+    -fx-border-color: rgba(74, 87, 108, 0.40);
+    -fx-border-width: 1 0 0 0;
+}
+
+.danger-button {
+    -fx-background-color: linear-gradient(to right, #d62828, #ef4444);
+    -fx-border-color: #ff8a8a;
+    -fx-text-fill: #ffffff;
+    -fx-font-weight: 700;
+}
+
+.danger-button:hover {
+    -fx-background-color: linear-gradient(to right, #ef4444, #ff6b6b);
+}
