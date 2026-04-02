@@ -173,7 +173,7 @@ public final class Main {
         }
         System.out.printf("Sample size: %.4f%n", sampleSize);
 
-        FxVisualizerApp.launchVisualizer(model, playbackController, sampleSize);
+        FxVisualizerApp.launchVisualizer(model, playbackController, sampleSize, config.cacheDir());
     }
 
     private static double seconds(long nanos) {

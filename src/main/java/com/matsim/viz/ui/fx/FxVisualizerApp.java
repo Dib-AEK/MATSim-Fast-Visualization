@@ -4,6 +4,7 @@ import com.matsim.viz.domain.ColorMode;
 import com.matsim.viz.engine.PlaybackController;
 import com.matsim.viz.engine.SimulationModel;
 import com.matsim.viz.ui.NetworkPanel;
+import com.matsim.viz.ui.PanelVideoRecorder;
 import com.matsim.viz.ui.TimeFormat;
 import javafx.animation.AnimationTimer;
 import javafx.application.Application;
@@ -34,6 +35,8 @@ import javafx.stage.Stage;
 
 import javax.swing.SwingUtilities;
 import java.awt.Dimension;
+import java.io.IOException;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
@@ -50,11 +53,15 @@ public final class FxVisualizerApp extends Application {
     private static SimulationModel startupModel;
     private static PlaybackController startupPlaybackController;
     private static double startupSampleSize = 1.0;
+    private static Path startupCacheDir;
 
-    public static void launchVisualizer(SimulationModel model, PlaybackController playbackController, double sampleSize) {
+    private PanelVideoRecorder videoRecorder;
+
+    public static void launchVisualizer(SimulationModel model, PlaybackController playbackController, double sampleSize, Path cacheDir) {
         startupModel = Objects.requireNonNull(model, "model");
         startupPlaybackController = Objects.requireNonNull(playbackController, "playbackController");
         startupSampleSize = sampleSize;
+        startupCacheDir = cacheDir;
         Application.launch(FxVisualizerApp.class);
     }
 
@@ -70,6 +77,9 @@ public final class FxVisualizerApp extends Application {
         NetworkPanel networkPanel = getOnEdt(() -> new NetworkPanel(model, playbackController));
         runOnEdt(() -> networkPanel.setPreferredSize(new Dimension(1200, 800)));
         runOnEdt(() -> networkPanel.setSampleSize(startupSampleSize));
+
+        Path recordDir = startupCacheDir != null ? startupCacheDir : Path.of("cache");
+        videoRecorder = new PanelVideoRecorder(recordDir);
 
         SwingNode swingNode = new SwingNode();
         runOnEdt(() -> swingNode.setContent(networkPanel));
@@ -101,6 +111,9 @@ public final class FxVisualizerApp extends Application {
 
         stage.setOnCloseRequest(event -> {
             animation.stop();
+            if (videoRecorder.isRecording()) {
+                try { videoRecorder.stop(); } catch (IOException ignored) { }
+            }
             Platform.exit();
         });
     }
@@ -155,6 +168,45 @@ public final class FxVisualizerApp extends Application {
         quitButton.getStyleClass().add("danger-button");
         quitButton.setOnAction(e -> Platform.exit());
 
+        ComboBox<PanelVideoRecorder.Quality> qualityCombo = new ComboBox<>(
+                FXCollections.observableArrayList(PanelVideoRecorder.Quality.values()));
+        qualityCombo.setValue(PanelVideoRecorder.Quality.MEDIUM);
+        qualityCombo.setPrefWidth(230);
+
+        Button recordButton = new Button("\u23FA Record");
+        recordButton.getStyleClass().add("accent-button");
+        recordButton.setOnAction(e -> {
+            if (videoRecorder.isRecording()) {
+                try {
+                    Path saved = videoRecorder.stop();
+                    recordButton.setText("\u23FA Record");
+                    recordButton.getStyleClass().remove("recording-button");
+                    qualityCombo.setDisable(false);
+                    if (saved != null) {
+                        Alert info = new Alert(Alert.AlertType.INFORMATION,
+                                "Video saved to:\n" + saved.toAbsolutePath());
+                        info.setHeaderText("Recording Saved");
+                        info.showAndWait();
+                    }
+                } catch (IOException ex) {
+                    Alert err = new Alert(Alert.AlertType.ERROR, ex.getMessage());
+                    err.setHeaderText("Failed to stop recording");
+                    err.showAndWait();
+                }
+            } else {
+                try {
+                    videoRecorder.start(qualityCombo.getValue());
+                    recordButton.setText("\u23F9 Stop");
+                    recordButton.getStyleClass().add("recording-button");
+                    qualityCombo.setDisable(true);
+                } catch (IOException ex) {
+                    Alert err = new Alert(Alert.AlertType.ERROR, ex.getMessage());
+                    err.setHeaderText("Failed to start recording");
+                    err.showAndWait();
+                }
+            }
+        });
+
         Region spacer = new Region();
         HBox.setHgrow(spacer, Priority.ALWAYS);
 
@@ -169,6 +221,8 @@ public final class FxVisualizerApp extends Application {
                 colorCaption,
                 colorModeCombo,
                 spacer,
+                qualityCombo,
+                recordButton,
                 quitButton
         );
 
@@ -689,7 +743,12 @@ public final class FxVisualizerApp extends Application {
                 uiState.timeValue().setText(TimeFormat.hhmmss(playbackController.getCurrentTime()));
                 uiState.playPauseButton().setText(playbackController.isPlaying() ? "Pause" : "Play");
 
-                runOnEdt(networkPanel::repaint);
+                runOnEdt(() -> {
+                    networkPanel.repaint();
+                    if (videoRecorder.isRecording()) {
+                        videoRecorder.captureFrame(networkPanel);
+                    }
+                });
             }
         };
     }

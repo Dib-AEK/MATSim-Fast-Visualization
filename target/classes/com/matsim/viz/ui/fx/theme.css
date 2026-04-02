@@ -152,6 +152,16 @@
     -fx-background-color: linear-gradient(to right, #ef4444, #ff6b6b);
 }
 
+.recording-button {
+    -fx-background-color: linear-gradient(to right, #d62828, #ef4444);
+    -fx-border-color: #ff8a8a;
+    -fx-font-weight: 700;
+}
+
+.recording-button:hover {
+    -fx-background-color: linear-gradient(to right, #ef4444, #ff6b6b);
+}
+
 .titled-pane {
     -fx-text-fill: #8ec8ff;
 }

@@ -62,6 +62,7 @@ public final class NetworkPanel extends JPanel {
 
     private ColorMode colorMode = ColorMode.DEFAULT;
     private boolean showQueues = false;
+    private boolean suppressOverlays = false;
     private boolean showBottleneck;
     private double bottleneckDivisor = 6.0;
     private double bidirectionalOffset = 0.45;
@@ -236,6 +237,10 @@ public final class NetworkPanel extends JPanel {
         repaint();
     }
 
+    public void setSuppressOverlays(boolean suppress) {
+        this.suppressOverlays = suppress;
+    }
+
     public void setBidirectionalOffset(double offset) {
         this.bidirectionalOffset = Math.max(0.0, Math.min(1.0, offset));
         invalidateNetworkCache();
@@ -407,11 +412,13 @@ public final class NetworkPanel extends JPanel {
         }
 
         drawVehicles(g2);
-        if (showQueues) {
+        if (showQueues && !suppressOverlays) {
             drawQueueLabels(g2);
         }
-        drawClockOverlay(g2);
-        drawLegendOverlay(g2);
+        if (!suppressOverlays) {
+            drawClockOverlay(g2);
+            drawLegendOverlay(g2);
+        }
 
         g2.dispose();
     }
