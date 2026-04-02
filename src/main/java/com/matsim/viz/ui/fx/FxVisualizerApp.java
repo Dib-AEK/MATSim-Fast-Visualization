@@ -220,8 +220,18 @@ public final class FxVisualizerApp extends Application {
         VBox card = createCard("Display Settings");
 
         CheckBox queueToggle = new CheckBox("Show Link Queues");
-        queueToggle.setSelected(true);
+        queueToggle.setSelected(false);
         queueToggle.setOnAction(e -> runOnEdt(() -> networkPanel.setShowQueues(queueToggle.isSelected())));
+
+        Label offsetCaption = new Label("Bidirectional link offset");
+        offsetCaption.getStyleClass().add("field-caption");
+        Slider offsetSlider = new Slider(0.0, 1.0, getOnEdt(networkPanel::getBidirectionalOffset));
+        Label offsetValue = new Label(String.format("%.2f", offsetSlider.getValue()));
+        offsetValue.getStyleClass().add("mono-value");
+        offsetSlider.valueProperty().addListener((obs, oldValue, newValue) -> {
+            runOnEdt(() -> networkPanel.setBidirectionalOffset(newValue.doubleValue()));
+            offsetValue.setText(String.format("%.2f", newValue.doubleValue()));
+        });
 
         final Stage[] colorSettingsWindow = {null};
         Button colorSettingsButton = new Button("Color Settings\u2026");
@@ -253,7 +263,7 @@ public final class FxVisualizerApp extends Application {
             geometrySettingsWindow[0].toFront();
         });
 
-        card.getChildren().addAll(queueToggle, colorSettingsButton, geometrySettingsButton);
+        card.getChildren().addAll(queueToggle, offsetCaption, offsetSlider, offsetValue, colorSettingsButton, geometrySettingsButton);
         return card;
     }
 
@@ -709,8 +719,7 @@ public final class FxVisualizerApp extends Application {
 
     private static Set<String> defaultTransportModes(List<String> availableModes) {
         Set<String> selected = new LinkedHashSet<>();
-        Set<String> defaults = Set.of("car", "bike", "bicycle", "truck", "freight", "hdv",
-                "bus", "tram", "rail", "train", "subway", "metro", "ferry", "funicular");
+        Set<String> defaults = Set.of("car", "bike", "truck", "bus", "tram");
         for (String mode : availableModes) {
             String normalized = normalizeMode(mode);
             if (defaults.contains(normalized)) {

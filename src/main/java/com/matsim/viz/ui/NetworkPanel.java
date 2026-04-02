@@ -64,6 +64,7 @@ public final class NetworkPanel extends JPanel {
     private boolean showQueues = false;
     private boolean showBottleneck;
     private double bottleneckDivisor = 6.0;
+    private double bidirectionalOffset = 0.45;
     private double sampleSize = 1.0;
     private double carLikeVehicleLengthMeters = DEFAULT_CAR_LIKE_LENGTH_METERS;
     private double bikeVehicleLengthMeters = DEFAULT_BIKE_LENGTH_METERS;
@@ -233,6 +234,16 @@ public final class NetworkPanel extends JPanel {
     public void setShowQueues(boolean showQueues) {
         this.showQueues = showQueues;
         repaint();
+    }
+
+    public void setBidirectionalOffset(double offset) {
+        this.bidirectionalOffset = Math.max(0.0, Math.min(1.0, offset));
+        invalidateNetworkCache();
+        repaint();
+    }
+
+    public double getBidirectionalOffset() {
+        return bidirectionalOffset;
     }
 
     public void setShowBottleneck(boolean show) {
@@ -451,6 +462,13 @@ public final class NetworkPanel extends JPanel {
         double laneWidth = laneWidthPixels();
         Map<String, double[]> nodeMaxRadius = new HashMap<>();
 
+        Set<String> renderedNodePairs = new HashSet<>();
+        for (LinkSegment link : model.networkData().getLinks().values()) {
+            if (shouldRenderLink(link)) {
+                renderedNodePairs.add(link.fromNodeId() + ">" + link.toNodeId());
+            }
+        }
+
         g2.setColor(MAP_ROAD);
         for (LinkSegment link : model.networkData().getLinks().values()) {
             if (!shouldRenderLink(link)) {
@@ -471,6 +489,19 @@ public final class NetworkPanel extends JPanel {
             double ny = dx / length;
             double angle = Math.atan2(dy, dx);
             float roadWidth = (float) Math.max(0.35, Math.min(32.0, laneWidth * laneCount));
+
+            boolean hasReverse = renderedNodePairs.contains(link.toNodeId() + ">" + link.fromNodeId());
+            double offsetX = 0;
+            double offsetY = 0;
+            if (hasReverse) {
+                double shift = roadWidth * bidirectionalOffset;
+                offsetX = nx * shift;
+                offsetY = ny * shift;
+                a.x += offsetX;
+                a.y += offsetY;
+                b.x += offsetX;
+                b.y += offsetY;
+            }
 
             g2.setStroke(new BasicStroke(roadWidth, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
             g2.drawLine((int) Math.round(a.x), (int) Math.round(a.y), (int) Math.round(b.x), (int) Math.round(b.y));
@@ -1004,8 +1035,7 @@ public final class NetworkPanel extends JPanel {
 
     private static Set<String> defaultTransportModes(List<String> availableModes) {
         Set<String> selected = new HashSet<>();
-        Set<String> defaults = Set.of("car", "bike", "bicycle", "truck", "freight", "hdv",
-                "bus", "tram", "rail", "train", "subway", "metro", "ferry", "funicular");
+        Set<String> defaults = Set.of("car", "bike", "truck", "bus", "tram");
         for (String mode : availableModes) {
             String normalized = normalizeMode(mode);
             if (defaults.contains(normalized)) {

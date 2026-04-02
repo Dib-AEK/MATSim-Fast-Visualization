@@ -11,8 +11,8 @@ import java.util.Locale;
 import java.util.Map;
 
 public final class VehicleColorProvider {
-    private static final Color DEFAULT_CAR_MODE_COLOR = new Color(0xFF00B3);
-    private static final Color DEFAULT_BIKE_MODE_COLOR = new Color(0x18C93C);
+    private static final Color DEFAULT_CAR_MODE_COLOR = new Color(0xFF0BAECF);
+    private static final Color DEFAULT_BIKE_MODE_COLOR = new Color(0x87EA0B);
 
     private static final Color[] PALETTE = new Color[]{
             new Color(0x1F77B4),
@@ -44,15 +44,15 @@ public final class VehicleColorProvider {
     public VehicleColorProvider() {
         modeColors.put("car", DEFAULT_CAR_MODE_COLOR);
         modeColors.put("bike", DEFAULT_BIKE_MODE_COLOR);
-        modeColors.put("bus", new Color(0xFFAA00));
-        modeColors.put("tram", new Color(0x00BB44));
-        modeColors.put("rail", new Color(0xDD3333));
-        modeColors.put("train", new Color(0xDD3333));
+        modeColors.put("bus", new Color(0xF0FF17));
+        modeColors.put("tram", new Color(0xFF0F6F));
+        modeColors.put("rail", new Color(0x6C0202));
+        modeColors.put("train", new Color(0xFD0000));
         modeColors.put("subway", new Color(0x0077CC));
         modeColors.put("metro", new Color(0x0077CC));
-        modeColors.put("ferry", new Color(0x00AACC));
+        modeColors.put("ferry", new Color(0x00FFC3));
         modeColors.put("funicular", new Color(0x8855BB));
-        sexColors.put("male", new Color(0x11116B));
+        sexColors.put("male", new Color(0xFF0BAECF, true));
         sexColors.put("female", new Color(0xFF4FA3));
         sexColors.put("other", new Color(0xFFC857));
         sexColors.put("unknown", new Color(0x9A9A9A));
