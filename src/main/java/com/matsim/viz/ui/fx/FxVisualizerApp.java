@@ -48,10 +48,12 @@ import java.util.function.Supplier;
 public final class FxVisualizerApp extends Application {
     private static SimulationModel startupModel;
     private static PlaybackController startupPlaybackController;
+    private static double startupSampleSize = 1.0;
 
-    public static void launchVisualizer(SimulationModel model, PlaybackController playbackController) {
+    public static void launchVisualizer(SimulationModel model, PlaybackController playbackController, double sampleSize) {
         startupModel = Objects.requireNonNull(model, "model");
         startupPlaybackController = Objects.requireNonNull(playbackController, "playbackController");
+        startupSampleSize = sampleSize;
         Application.launch(FxVisualizerApp.class);
     }
 
@@ -66,6 +68,7 @@ public final class FxVisualizerApp extends Application {
 
         NetworkPanel networkPanel = getOnEdt(() -> new NetworkPanel(model, playbackController));
         runOnEdt(() -> networkPanel.setPreferredSize(new Dimension(1200, 800)));
+        runOnEdt(() -> networkPanel.setSampleSize(startupSampleSize));
 
         SwingNode swingNode = new SwingNode();
         runOnEdt(() -> swingNode.setContent(networkPanel));
@@ -74,7 +77,7 @@ public final class FxVisualizerApp extends Application {
         root.getStyleClass().add("app-root");
 
         TopBarBundle topBar = buildTopBar(stage, model, playbackController, networkPanel);
-        NodeBundle sidePanel = buildSidePanel(model, networkPanel);
+        NodeBundle sidePanel = buildSidePanel(stage, model, networkPanel);
 
         root.setTop(topBar.root());
         root.setCenter(swingNode);
@@ -147,46 +150,6 @@ public final class FxVisualizerApp extends Application {
             }
         });
 
-        CheckBox queueToggle = new CheckBox("Show Queues");
-        queueToggle.setSelected(true);
-        queueToggle.setOnAction(e -> runOnEdt(() -> networkPanel.setShowQueues(queueToggle.isSelected())));
-
-        final Stage[] colorSettingsWindow = {null};
-        Button colorSettingsButton = new Button("Color Settings");
-        colorSettingsButton.getStyleClass().add("ghost-button");
-        colorSettingsButton.setOnAction(e -> {
-            if (colorSettingsWindow[0] == null) {
-                colorSettingsWindow[0] = createSettingsWindow(
-                        owner,
-                        "Color Settings",
-                        buildColorSettingsContent(model, networkPanel),
-                        520,
-                        760
-                );
-                colorSettingsWindow[0].setOnHidden(event -> colorSettingsWindow[0] = null);
-            }
-            colorSettingsWindow[0].show();
-            colorSettingsWindow[0].toFront();
-        });
-
-        final Stage[] geometrySettingsWindow = {null};
-        Button geometrySettingsButton = new Button("Vehicle Geometry");
-        geometrySettingsButton.getStyleClass().add("ghost-button");
-        geometrySettingsButton.setOnAction(e -> {
-            if (geometrySettingsWindow[0] == null) {
-                geometrySettingsWindow[0] = createSettingsWindow(
-                        owner,
-                        "Vehicle Geometry",
-                        buildGeometrySettingsContent(networkPanel),
-                        460,
-                        620
-                );
-                geometrySettingsWindow[0].setOnHidden(event -> geometrySettingsWindow[0] = null);
-            }
-            geometrySettingsWindow[0].show();
-            geometrySettingsWindow[0].toFront();
-        });
-
         Button quitButton = new Button("Quit");
         quitButton.getStyleClass().add("danger-button");
         quitButton.setOnAction(e -> Platform.exit());
@@ -204,9 +167,6 @@ public final class FxVisualizerApp extends Application {
                 speedValue,
                 colorCaption,
                 colorModeCombo,
-                queueToggle,
-                colorSettingsButton,
-                geometrySettingsButton,
                 spacer,
                 quitButton
         );
@@ -224,7 +184,7 @@ public final class FxVisualizerApp extends Application {
         return new TopBarBundle(wrapper, uiState);
     }
 
-    private NodeBundle buildSidePanel(SimulationModel model, NetworkPanel networkPanel) {
+    private NodeBundle buildSidePanel(Stage owner, SimulationModel model, NetworkPanel networkPanel) {
         VBox content = new VBox(12);
         content.getStyleClass().add("side-content");
         content.setPadding(new Insets(12));
@@ -243,11 +203,8 @@ public final class FxVisualizerApp extends Application {
                 selected -> runOnEdt(() -> networkPanel.setSelectedTripModes(selected))
         ));
 
-        VBox infoCard = createCard("Display Settings");
-        Label hint = new Label("Use top toolbar buttons:\n- Color Settings\n- Vehicle Geometry");
-        hint.getStyleClass().add("hint");
-        infoCard.getChildren().add(hint);
-        content.getChildren().add(infoCard);
+        content.getChildren().add(buildDisplaySettingsCard(owner, model, networkPanel));
+        content.getChildren().add(buildBottleneckCard(networkPanel));
 
         ScrollPane scrollPane = new ScrollPane(content);
         scrollPane.getStyleClass().add("side-scroll");
@@ -256,6 +213,83 @@ public final class FxVisualizerApp extends Application {
         scrollPane.setMinWidth(300);
 
         return new NodeBundle(scrollPane);
+    }
+
+    private VBox buildDisplaySettingsCard(Stage owner, SimulationModel model, NetworkPanel networkPanel) {
+        VBox card = createCard("Display Settings");
+
+        CheckBox queueToggle = new CheckBox("Show Link Queues");
+        queueToggle.setSelected(true);
+        queueToggle.setOnAction(e -> runOnEdt(() -> networkPanel.setShowQueues(queueToggle.isSelected())));
+
+        final Stage[] colorSettingsWindow = {null};
+        Button colorSettingsButton = new Button("Color Settings\u2026");
+        colorSettingsButton.getStyleClass().add("ghost-button");
+        colorSettingsButton.setMaxWidth(Double.MAX_VALUE);
+        colorSettingsButton.setOnAction(e -> {
+            if (colorSettingsWindow[0] == null) {
+                colorSettingsWindow[0] = createSettingsWindow(
+                        owner, "Color Settings",
+                        buildColorSettingsContent(model, networkPanel), 520, 760);
+                colorSettingsWindow[0].setOnHidden(event -> colorSettingsWindow[0] = null);
+            }
+            colorSettingsWindow[0].show();
+            colorSettingsWindow[0].toFront();
+        });
+
+        final Stage[] geometrySettingsWindow = {null};
+        Button geometrySettingsButton = new Button("Vehicle Geometry\u2026");
+        geometrySettingsButton.getStyleClass().add("ghost-button");
+        geometrySettingsButton.setMaxWidth(Double.MAX_VALUE);
+        geometrySettingsButton.setOnAction(e -> {
+            if (geometrySettingsWindow[0] == null) {
+                geometrySettingsWindow[0] = createSettingsWindow(
+                        owner, "Vehicle Geometry",
+                        buildGeometrySettingsContent(networkPanel), 460, 620);
+                geometrySettingsWindow[0].setOnHidden(event -> geometrySettingsWindow[0] = null);
+            }
+            geometrySettingsWindow[0].show();
+            geometrySettingsWindow[0].toFront();
+        });
+
+        card.getChildren().addAll(queueToggle, colorSettingsButton, geometrySettingsButton);
+        return card;
+    }
+
+    private VBox buildBottleneckCard(NetworkPanel networkPanel) {
+        VBox card = createCard("Bottleneck Detection");
+
+        CheckBox bottleneckToggle = new CheckBox("Show Bottlenecks");
+        bottleneckToggle.setSelected(false);
+        bottleneckToggle.setOnAction(e -> runOnEdt(() ->
+                networkPanel.setShowBottleneck(bottleneckToggle.isSelected())
+        ));
+
+        Label divisorCaption = new Label("Jam spacing (m per vehicle)");
+        divisorCaption.getStyleClass().add("field-caption");
+
+        Slider divisorSlider = new Slider(1, 20, getOnEdt(networkPanel::getBottleneckDivisor));
+        Label divisorValue = new Label(String.format("%.1f", divisorSlider.getValue()));
+        divisorValue.getStyleClass().add("mono-value");
+        divisorSlider.valueProperty().addListener((obs, oldVal, newVal) -> {
+            runOnEdt(() -> networkPanel.setBottleneckDivisor(newVal.doubleValue()));
+            divisorValue.setText(String.format("%.1f", newVal.doubleValue()));
+        });
+
+        double sampleSz = getOnEdt(networkPanel::getSampleSize);
+        Label sampleSizeLabel = new Label(String.format("Sample size (from config): %.4f", sampleSz));
+        sampleSizeLabel.getStyleClass().add("hint");
+
+        Label formulaLabel = new Label("Bottleneck when vehicles > sampleSize \u00D7 lanes \u00D7 length / divisor");
+        formulaLabel.getStyleClass().add("hint");
+        formulaLabel.setWrapText(true);
+
+        card.getChildren().addAll(
+                bottleneckToggle,
+                divisorCaption, divisorSlider, divisorValue,
+                sampleSizeLabel, formulaLabel
+        );
+        return card;
     }
 
     private Node buildColorSettingsContent(SimulationModel model, NetworkPanel networkPanel) {

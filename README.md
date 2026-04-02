@@ -6,6 +6,10 @@ This project is a high-performance, maintainable MATSim visualizer focused on li
 
 ![MATSim Fast Visualization UI](images/image1.png)
 
+It shows multiple features, such as location of bottlenecks.
+
+![MATSim Fast Visualization UI](images/image2.png)
+
 ## What It Visualizes
 
 - Vehicles moving through the network from origin to destination via link traversals.

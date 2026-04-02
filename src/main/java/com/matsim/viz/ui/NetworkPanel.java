@@ -44,9 +44,10 @@ public final class NetworkPanel extends JPanel {
     private static final double MIN_VEHICLE_LENGTH_METERS = 0.8;
 
     private static final Color MAP_BACKGROUND = new Color(0x060606);
-    private static final Color MAP_ROAD = new Color(0x2A2A2A);
-    private static final Color MAP_ROAD_CAR = new Color(0x393939);
+    private static final Color MAP_ROAD = new Color(0x333333);
     private static final Color QUEUE_LABEL = new Color(0xFF3D3D);
+    private static final Color BOTTLENECK_NORMAL = new Color(0x2E86FF);
+    private static final Color BOTTLENECK_CONGESTED = new Color(0xE03030);
 
     private final SimulationModel model;
     private final PlaybackController playbackController;
@@ -57,6 +58,9 @@ public final class NetworkPanel extends JPanel {
 
     private ColorMode colorMode = ColorMode.DEFAULT;
     private boolean showQueues = true;
+    private boolean showBottleneck;
+    private double bottleneckDivisor = 6.0;
+    private double sampleSize = 1.0;
     private double carLikeVehicleLengthMeters = DEFAULT_CAR_LIKE_LENGTH_METERS;
     private double bikeVehicleLengthMeters = DEFAULT_BIKE_LENGTH_METERS;
     private double truckVehicleLengthMeters = DEFAULT_TRUCK_LENGTH_METERS;
@@ -223,6 +227,32 @@ public final class NetworkPanel extends JPanel {
         repaint();
     }
 
+    public void setShowBottleneck(boolean show) {
+        this.showBottleneck = show;
+        repaint();
+    }
+
+    public boolean isShowBottleneck() {
+        return showBottleneck;
+    }
+
+    public void setBottleneckDivisor(double divisor) {
+        this.bottleneckDivisor = Math.max(1.0, divisor);
+        repaint();
+    }
+
+    public double getBottleneckDivisor() {
+        return bottleneckDivisor;
+    }
+
+    public void setSampleSize(double sampleSize) {
+        this.sampleSize = Math.max(0.0001, sampleSize);
+    }
+
+    public double getSampleSize() {
+        return sampleSize;
+    }
+
     public void setCarLikeVehicleLengthMeters(double value) {
         this.carLikeVehicleLengthMeters = Math.max(0.5, value);
         repaint();
@@ -375,13 +405,14 @@ public final class NetworkPanel extends JPanel {
 
         linkScreenGeometries.clear();
         double laneWidth = laneWidthPixels();
+        Map<String, double[]> nodeMaxRadius = new HashMap<>();
 
+        g2.setColor(MAP_ROAD);
         for (LinkSegment link : model.networkData().getLinks().values()) {
             if (!shouldRenderLink(link)) {
                 continue;
             }
 
-            g2.setColor(link.allowsMode("car") ? MAP_ROAD_CAR : MAP_ROAD);
             Point2D.Double a = worldToScreen(link.fromX(), link.fromY());
             Point2D.Double b = worldToScreen(link.toX(), link.toY());
             double dx = b.x - a.x;
@@ -397,10 +428,26 @@ public final class NetworkPanel extends JPanel {
             double angle = Math.atan2(dy, dx);
             float roadWidth = (float) Math.max(0.35, Math.min(32.0, laneWidth * laneCount));
 
-            g2.setStroke(new BasicStroke(roadWidth, BasicStroke.CAP_BUTT, BasicStroke.JOIN_BEVEL));
+            g2.setStroke(new BasicStroke(roadWidth, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
             g2.drawLine((int) Math.round(a.x), (int) Math.round(a.y), (int) Math.round(b.x), (int) Math.round(b.y));
 
+            double halfWidth = roadWidth / 2.0;
+            nodeMaxRadius.merge(link.fromNodeId(), new double[]{a.x, a.y, halfWidth},
+                    (old, nw) -> { old[2] = Math.max(old[2], nw[2]); return old; });
+            nodeMaxRadius.merge(link.toNodeId(), new double[]{b.x, b.y, halfWidth},
+                    (old, nw) -> { old[2] = Math.max(old[2], nw[2]); return old; });
+
             linkScreenGeometries.put(link.id(), new LinkScreenGeometry(a.x, a.y, dx, dy, length, nx, ny, laneWidth, laneCount, angle));
+        }
+
+        for (double[] nodeInfo : nodeMaxRadius.values()) {
+            double r = nodeInfo[2];
+            if (r > 0.3) {
+                int cx = (int) Math.round(nodeInfo[0] - r);
+                int cy = (int) Math.round(nodeInfo[1] - r);
+                int d = (int) Math.round(r * 2);
+                g2.fillOval(cx, cy, d, d);
+            }
         }
 
         g2.dispose();
@@ -446,6 +493,13 @@ public final class NetworkPanel extends JPanel {
 
             List<Integer> linkTraversals = entry.getValue();
 
+            boolean linkIsBottleneck = false;
+            if (showBottleneck) {
+                int queueCount = playbackController.getQueueCountForLink(linkId);
+                double capacity = sampleSize * laneCount(link) * (link.length() / bottleneckDivisor);
+                linkIsBottleneck = queueCount > capacity;
+            }
+
                 List<Integer> bikeTraversals = new ArrayList<>();
                 List<Integer> truckTraversals = new ArrayList<>();
                 List<Integer> carLikeTraversals = new ArrayList<>();
@@ -473,7 +527,8 @@ public final class NetworkPanel extends JPanel {
                     carLikeVehicleLengthMeters,
                     carLikeVehicleWidthRatio,
                     0.12,
-                    true
+                    true,
+                    linkIsBottleneck
             );
 
                 drawModeGroup(
@@ -485,7 +540,8 @@ public final class NetworkPanel extends JPanel {
                     truckVehicleLengthMeters,
                     truckVehicleWidthRatio,
                     0.30,
-                    true
+                    true,
+                    linkIsBottleneck
                 );
 
             drawModeGroup(
@@ -497,7 +553,8 @@ public final class NetworkPanel extends JPanel {
                     bikeVehicleLengthMeters,
                     bikeVehicleWidthRatio,
                     -0.20,
-                    false
+                    false,
+                    linkIsBottleneck
             );
         }
     }
@@ -511,7 +568,8 @@ public final class NetworkPanel extends JPanel {
             double baseLengthMeters,
             double widthRatio,
             double modeOffsetFactor,
-            boolean queueConstrained
+            boolean queueConstrained,
+            boolean isBottleneck
     ) {
         if (traversals.isEmpty()) {
             return;
@@ -560,9 +618,14 @@ public final class NetworkPanel extends JPanel {
             sy += geometry.ny() * laneOffset;
 
             String tripMode = model.vehicleToMode().get(model.traversalVehicleId(traversalIndex));
-        Color drawColor = colorMode == ColorMode.DEFAULT
-                    ? colorProvider.colorForTripMode(tripMode)
-                    : colorProvider.colorFor(traversalIndex, model, colorMode);
+            Color drawColor;
+            if (showBottleneck) {
+                drawColor = isBottleneck ? BOTTLENECK_CONGESTED : BOTTLENECK_NORMAL;
+            } else {
+                drawColor = colorMode == ColorMode.DEFAULT
+                        ? colorProvider.colorForTripMode(tripMode)
+                        : colorProvider.colorFor(traversalIndex, model, colorMode);
+            }
 
             g2.setColor(drawColor);
             double vehicleLengthPx = Math.max(1.2, (vehicleLengthMeters / linkLengthMeters) * geometry.length());
@@ -759,6 +822,13 @@ public final class NetworkPanel extends JPanel {
     }
 
     private List<LegendEntry> legendEntriesToDraw() {
+        if (showBottleneck) {
+            return List.of(
+                    new LegendEntry("Normal", BOTTLENECK_NORMAL),
+                    new LegendEntry("Bottleneck", BOTTLENECK_CONGESTED)
+            );
+        }
+
         if (colorMode == ColorMode.DEFAULT && !selectedTripModes.isEmpty()) {
             List<LegendEntry> modeEntries = new ArrayList<>();
             for (String mode : model.availableTripModes()) {

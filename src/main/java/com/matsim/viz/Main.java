@@ -147,7 +147,21 @@ public final class Main {
 
         cached = null;
 
-        FxVisualizerApp.launchVisualizer(model, playbackController);
+        double sampleSize = 1.0;
+        try {
+            var eqasimModule = inputs.matsimConfig().getModules().get("eqasim");
+            if (eqasimModule != null) {
+                String sampleSizeStr = eqasimModule.getParams().get("sampleSize");
+                if (sampleSizeStr != null && !sampleSizeStr.isBlank()) {
+                    sampleSize = Double.parseDouble(sampleSizeStr.trim());
+                }
+            }
+        } catch (Exception ex) {
+            System.out.println("Warning: Could not read eqasim sampleSize: " + ex.getMessage());
+        }
+        System.out.printf("Sample size: %.4f%n", sampleSize);
+
+        FxVisualizerApp.launchVisualizer(model, playbackController, sampleSize);
     }
 
     private static double seconds(long nanos) {
