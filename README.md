@@ -10,6 +10,10 @@ It shows multiple features, such as location of bottlenecks.
 
 ![MATSim Fast Visualization UI](images/image2.png)
 
+### Demo Video
+
+<video src="images/recording_20260402_225814_1440p.mp4" controls width="100%"></video>
+
 ## What It Visualizes
 
 - Vehicles moving through the network from origin to destination via link traversals.
