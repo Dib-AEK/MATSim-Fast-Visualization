@@ -15,10 +15,13 @@ import java.nio.file.Path;
 public final class PanelVideoRecorder {
 
     public enum Quality {
-        LOW("480p", 854, 480, 15),
-        MEDIUM("720p", 1280, 720, 24),
-        HIGH("1080p", 1920, 1080, 30),
-        ULTRA("1440p", 2560, 1440, 30);
+        MEDIUM("720p 30fps", 1280, 720, 30),
+        HIGH("1080p 30fps", 1920, 1080, 30),
+        HIGH_60("1080p 60fps", 1920, 1080, 60),
+        QHD("1440p 30fps", 2560, 1440, 30),
+        QHD_60("1440p 60fps", 2560, 1440, 60),
+        UHD("4K 30fps", 3840, 2160, 30),
+        UHD_60("4K 60fps", 3840, 2160, 60);
 
         private final String label;
         private final int width;
@@ -98,11 +101,16 @@ public final class PanelVideoRecorder {
 
         panel.setSuppressOverlays(true);
         BufferedImage source = new BufferedImage(pw, ph, BufferedImage.TYPE_3BYTE_BGR);
-        panel.paint(source.getGraphics());
+        Graphics2D sg = source.createGraphics();
+        sg.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+        panel.paint(sg);
+        sg.dispose();
         panel.setSuppressOverlays(false);
 
         Graphics2D g2 = captureBuffer.createGraphics();
-        g2.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+        g2.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);
+        g2.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
+        g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
         g2.drawImage(source, 0, 0, quality.width(), quality.height(), null);
         g2.dispose();
 

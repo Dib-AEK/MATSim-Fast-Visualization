@@ -3,6 +3,7 @@ package com.matsim.viz.ui;
 import com.matsim.viz.domain.ColorMode;
 import com.matsim.viz.domain.LinkSegment;
 import com.matsim.viz.domain.NetworkData;
+import com.matsim.viz.domain.VehicleShape;
 import com.matsim.viz.engine.PlaybackController;
 import com.matsim.viz.engine.SimulationModel;
 
@@ -15,6 +16,7 @@ import java.awt.FontMetrics;
 import java.awt.Graphics;
 import java.awt.Graphics2D;
 import java.awt.Point;
+import java.awt.Polygon;
 import java.awt.RenderingHints;
 import java.awt.event.ComponentAdapter;
 import java.awt.event.ComponentEvent;
@@ -47,8 +49,10 @@ public final class NetworkPanel extends JPanel {
     private static final double DEFAULT_RAIL_WIDTH_RATIO = 0.90;
     private static final double MIN_VEHICLE_LENGTH_METERS = 0.8;
 
-    private static final Color MAP_BACKGROUND = new Color(0x060606);
-    private static final Color MAP_ROAD = new Color(0x333333);
+    private static final Color DEFAULT_BACKGROUND = new Color(0x060606);
+    private static final Color DEFAULT_ROAD = new Color(0x333333);
+    private static final Color LIGHT_BACKGROUND = new Color(0xECEFF4);
+    private static final Color LIGHT_ROAD = new Color(0xB0B8C8);
     private static final Color QUEUE_LABEL = new Color(0xFF3D3D);
     private static final Color BOTTLENECK_NORMAL = new Color(0x2E86FF);
     private static final Color BOTTLENECK_CONGESTED = new Color(0xE03030);
@@ -61,6 +65,9 @@ public final class NetworkPanel extends JPanel {
     private final Map<String, LinkScreenGeometry> linkScreenGeometries = new HashMap<>();
 
     private ColorMode colorMode = ColorMode.DEFAULT;
+    private boolean darkTheme = true;
+    private Color mapBackground = DEFAULT_BACKGROUND;
+    private Color mapRoad = DEFAULT_ROAD;
     private boolean showQueues = false;
     private boolean suppressOverlays = false;
     private boolean showBottleneck;
@@ -77,6 +84,11 @@ public final class NetworkPanel extends JPanel {
     private double truckVehicleWidthRatio = DEFAULT_TRUCK_WIDTH_RATIO;
     private double busVehicleWidthRatio = DEFAULT_BUS_WIDTH_RATIO;
     private double railVehicleWidthRatio = DEFAULT_RAIL_WIDTH_RATIO;
+    private VehicleShape carShape = VehicleShape.RECTANGLE;
+    private VehicleShape bikeShape = VehicleShape.DIAMOND;
+    private VehicleShape truckShape = VehicleShape.RECTANGLE;
+    private VehicleShape busShape = VehicleShape.OVAL;
+    private VehicleShape railShape = VehicleShape.ARROW;
     private boolean keepVehiclesVisibleWhenZoomedOut = true;
     private double minVehicleLengthPixels = 2.5;
     private double minVehicleWidthPixels = 1.2;
@@ -99,7 +111,7 @@ public final class NetworkPanel extends JPanel {
     public NetworkPanel(SimulationModel model, PlaybackController playbackController) {
         this.model = model;
         this.playbackController = playbackController;
-        setBackground(MAP_BACKGROUND);
+        setBackground(mapBackground);
         setPreferredSize(new Dimension(1200, 800));
         selectedLinkModes.addAll(defaultTransportModes(model.availableLinkModes()));
         selectedTripModes.addAll(defaultTransportModes(model.availableTripModes()));
@@ -240,6 +252,51 @@ public final class NetworkPanel extends JPanel {
     public void setSuppressOverlays(boolean suppress) {
         this.suppressOverlays = suppress;
     }
+
+    public boolean isDarkTheme() {
+        return darkTheme;
+    }
+
+    public void setDarkTheme(boolean dark) {
+        this.darkTheme = dark;
+        this.mapBackground = dark ? DEFAULT_BACKGROUND : LIGHT_BACKGROUND;
+        this.mapRoad = dark ? DEFAULT_ROAD : LIGHT_ROAD;
+        setBackground(mapBackground);
+        invalidateNetworkCache();
+        repaint();
+    }
+
+    public Color getMapBackground() {
+        return mapBackground;
+    }
+
+    public void setMapBackground(Color color) {
+        this.mapBackground = color;
+        setBackground(mapBackground);
+        invalidateNetworkCache();
+        repaint();
+    }
+
+    public Color getMapRoad() {
+        return mapRoad;
+    }
+
+    public void setMapRoad(Color color) {
+        this.mapRoad = color;
+        invalidateNetworkCache();
+        repaint();
+    }
+
+    public VehicleShape getCarShape() { return carShape; }
+    public void setCarShape(VehicleShape s) { this.carShape = s; repaint(); }
+    public VehicleShape getBikeShape() { return bikeShape; }
+    public void setBikeShape(VehicleShape s) { this.bikeShape = s; repaint(); }
+    public VehicleShape getTruckShape() { return truckShape; }
+    public void setTruckShape(VehicleShape s) { this.truckShape = s; repaint(); }
+    public VehicleShape getBusShape() { return busShape; }
+    public void setBusShape(VehicleShape s) { this.busShape = s; repaint(); }
+    public VehicleShape getRailShape() { return railShape; }
+    public void setRailShape(VehicleShape s) { this.railShape = s; repaint(); }
 
     public void setBidirectionalOffset(double offset) {
         this.bidirectionalOffset = Math.max(0.0, Math.min(1.0, offset));
@@ -461,7 +518,7 @@ public final class NetworkPanel extends JPanel {
 
         cachedNetworkLayer = new BufferedImage(cachedWidth, cachedHeight, BufferedImage.TYPE_INT_RGB);
         Graphics2D g2 = cachedNetworkLayer.createGraphics();
-        g2.setColor(MAP_BACKGROUND);
+        g2.setColor(mapBackground);
         g2.fillRect(0, 0, cachedWidth, cachedHeight);
         g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_OFF);
 
@@ -476,7 +533,7 @@ public final class NetworkPanel extends JPanel {
             }
         }
 
-        g2.setColor(MAP_ROAD);
+        g2.setColor(mapRoad);
         for (LinkSegment link : model.networkData().getLinks().values()) {
             if (!shouldRenderLink(link)) {
                 continue;
@@ -616,6 +673,7 @@ public final class NetworkPanel extends JPanel {
                     currentTime,
                     carLikeVehicleLengthMeters,
                     carLikeVehicleWidthRatio,
+                    carShape,
                     0.12,
                     true,
                     linkIsBottleneck
@@ -629,6 +687,7 @@ public final class NetworkPanel extends JPanel {
                     currentTime,
                     truckVehicleLengthMeters,
                     truckVehicleWidthRatio,
+                    truckShape,
                     0.30,
                     true,
                     linkIsBottleneck
@@ -642,6 +701,7 @@ public final class NetworkPanel extends JPanel {
                     currentTime,
                     busVehicleLengthMeters,
                     busVehicleWidthRatio,
+                    busShape,
                     0.15,
                     true,
                     linkIsBottleneck
@@ -655,6 +715,7 @@ public final class NetworkPanel extends JPanel {
                     currentTime,
                     railVehicleLengthMeters,
                     railVehicleWidthRatio,
+                    railShape,
                     0.0,
                     true,
                     linkIsBottleneck
@@ -668,6 +729,7 @@ public final class NetworkPanel extends JPanel {
                     currentTime,
                     bikeVehicleLengthMeters,
                     bikeVehicleWidthRatio,
+                    bikeShape,
                     -0.20,
                     false,
                     linkIsBottleneck
@@ -683,6 +745,7 @@ public final class NetworkPanel extends JPanel {
             double currentTime,
             double baseLengthMeters,
             double widthRatio,
+            VehicleShape shape,
             double modeOffsetFactor,
             boolean queueConstrained,
             boolean isBottleneck
@@ -752,7 +815,7 @@ public final class NetworkPanel extends JPanel {
                 vehicleWidthPx = Math.max(minVehicleWidthPixels, vehicleWidthPx);
             }
 
-            drawVehicleRect(g2, sx, sy, geometry.angle(), vehicleLengthPx, vehicleWidthPx);
+            drawVehicle(g2, sx, sy, geometry.angle(), vehicleLengthPx, vehicleWidthPx, shape);
         }
     }
 
@@ -865,12 +928,51 @@ public final class NetworkPanel extends JPanel {
         return Math.max(1, (int) Math.ceil(link.lanes()));
     }
 
-    private void drawVehicleRect(Graphics2D g2, double sx, double sy, double angle, double length, double width) {
+    private void drawVehicle(Graphics2D g2, double sx, double sy, double angle,
+                             double length, double width, VehicleShape shape) {
         AffineTransform original = g2.getTransform();
         g2.translate(sx, sy);
         g2.rotate(angle);
-        Rectangle2D.Double rectangle = new Rectangle2D.Double(-length / 2.0, -width / 2.0, length, width);
-        g2.fill(rectangle);
+
+        double hl = length / 2.0;
+        double hw = width / 2.0;
+
+        switch (shape) {
+            case RECTANGLE -> {
+                g2.fill(new Rectangle2D.Double(-hl, -hw, length, width));
+            }
+            case ARROW -> {
+                int[] xs = {(int) Math.round(hl), (int) Math.round(-hl), (int) Math.round(-hl * 0.4),
+                            (int) Math.round(-hl), (int) Math.round(-hl)};
+                int[] ys = {0, (int) Math.round(-hw), 0,
+                            (int) Math.round(hw), (int) Math.round(-hw)};
+                // Arrow: tip at front, notched tail
+                int[] axs = {(int) Math.round(hl), (int) Math.round(-hl), (int) Math.round(-hl * 0.5),
+                             (int) Math.round(-hl)};
+                int[] ays = {0, (int) Math.round(-hw), 0, (int) Math.round(hw)};
+                g2.fillPolygon(axs, ays, 4);
+            }
+            case TRIANGLE -> {
+                int[] txs = {(int) Math.round(hl), (int) Math.round(-hl), (int) Math.round(-hl)};
+                int[] tys = {0, (int) Math.round(-hw), (int) Math.round(hw)};
+                g2.fillPolygon(txs, tys, 3);
+            }
+            case DIAMOND -> {
+                int[] dxs = {(int) Math.round(hl), 0, (int) Math.round(-hl), 0};
+                int[] dys = {0, (int) Math.round(-hw), 0, (int) Math.round(hw)};
+                g2.fillPolygon(dxs, dys, 4);
+            }
+            case CIRCLE -> {
+                double r = Math.min(hl, hw);
+                g2.fillOval((int) Math.round(-r), (int) Math.round(-r),
+                        (int) Math.round(r * 2), (int) Math.round(r * 2));
+            }
+            case OVAL -> {
+                g2.fillOval((int) Math.round(-hl), (int) Math.round(-hw),
+                        (int) Math.round(length), (int) Math.round(width));
+            }
+        }
+
         g2.setTransform(original);
     }
 
@@ -882,14 +984,14 @@ public final class NetworkPanel extends JPanel {
         int x = getWidth() - width - 12;
         int y = 12;
 
-        g2.setColor(new Color(0x101010));
+        g2.setColor(darkTheme ? new Color(0x101010) : new Color(0xF0F0F0));
         g2.fillRoundRect(x, y, width, height, 10, 10);
-        g2.setColor(new Color(0x5A5A5A));
+        g2.setColor(darkTheme ? new Color(0x5A5A5A) : new Color(0xB0B0B0));
         g2.drawRoundRect(x, y, width, height, 10, 10);
 
         int iconX = x + 14;
         int iconY = y + 16;
-        g2.setColor(new Color(0xF0F0F0));
+        g2.setColor(darkTheme ? new Color(0xF0F0F0) : new Color(0x202020));
         g2.drawOval(iconX, iconY, 16, 16);
         g2.drawLine(iconX + 8, iconY + 8, iconX + 8, iconY + 3);
         g2.drawLine(iconX + 8, iconY + 8, iconX + 12, iconY + 8);
@@ -919,12 +1021,12 @@ public final class NetworkPanel extends JPanel {
         int x = getWidth() - width - 12;
         int y = 72;
 
-        g2.setColor(new Color(0x101010));
+        g2.setColor(darkTheme ? new Color(0x101010) : new Color(0xF0F0F0));
         g2.fillRoundRect(x, y, width, height, 10, 10);
-        g2.setColor(new Color(0x5A5A5A));
+        g2.setColor(darkTheme ? new Color(0x5A5A5A) : new Color(0xB0B0B0));
         g2.drawRoundRect(x, y, width, height, 10, 10);
 
-        g2.setColor(new Color(0xEFEFEF));
+        g2.setColor(darkTheme ? new Color(0xEFEFEF) : new Color(0x202020));
         g2.drawString("Legend", x + 10, y + 18);
 
         for (int i = 0; i < maxEntries; i++) {
@@ -932,7 +1034,7 @@ public final class NetworkPanel extends JPanel {
             int rowY = y + 30 + i * rowHeight;
             g2.setColor(entry.color());
             g2.fillRect(x + 10, rowY - 11, 12, 12);
-            g2.setColor(new Color(0xEFEFEF));
+            g2.setColor(darkTheme ? new Color(0xEFEFEF) : new Color(0x202020));
             g2.drawString(entry.label(), x + 28, rowY);
         }
     }

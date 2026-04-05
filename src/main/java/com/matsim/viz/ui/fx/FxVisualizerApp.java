@@ -1,6 +1,7 @@
 package com.matsim.viz.ui.fx;
 
 import com.matsim.viz.domain.ColorMode;
+import com.matsim.viz.domain.VehicleShape;
 import com.matsim.viz.engine.PlaybackController;
 import com.matsim.viz.engine.SimulationModel;
 import com.matsim.viz.ui.NetworkPanel;
@@ -56,6 +57,17 @@ public final class FxVisualizerApp extends Application {
     private static Path startupCacheDir;
 
     private PanelVideoRecorder videoRecorder;
+    private Scene mainScene;
+
+    private static final String DARK_CSS = Objects.requireNonNull(
+            FxVisualizerApp.class.getResource("/com/matsim/viz/ui/fx/theme.css"),
+            "Dark theme CSS not found"
+    ).toExternalForm();
+
+    private static final String LIGHT_CSS = Objects.requireNonNull(
+            FxVisualizerApp.class.getResource("/com/matsim/viz/ui/fx/theme-light.css"),
+            "Light theme CSS not found"
+    ).toExternalForm();
 
     public static void launchVisualizer(SimulationModel model, PlaybackController playbackController, double sampleSize, Path cacheDir) {
         startupModel = Objects.requireNonNull(model, "model");
@@ -95,10 +107,8 @@ public final class FxVisualizerApp extends Application {
         root.setRight(sidePanel.root());
 
         Scene scene = new Scene(root, 1540, 980);
-        scene.getStylesheets().add(Objects.requireNonNull(
-                FxVisualizerApp.class.getResource("/com/matsim/viz/ui/fx/theme.css"),
-                "JavaFX stylesheet not found"
-        ).toExternalForm());
+        scene.getStylesheets().add(DARK_CSS);
+        this.mainScene = scene;
 
         stage.setTitle("MATSim Visualizer - JavaFX");
         stage.setScene(scene);
@@ -259,6 +269,7 @@ public final class FxVisualizerApp extends Application {
         ));
 
         content.getChildren().add(buildDisplaySettingsCard(owner, model, networkPanel));
+        content.getChildren().add(buildAppearanceCard(owner, networkPanel));
         content.getChildren().add(buildBottleneckCard(networkPanel));
 
         ScrollPane scrollPane = new ScrollPane(content);
@@ -302,22 +313,7 @@ public final class FxVisualizerApp extends Application {
             colorSettingsWindow[0].toFront();
         });
 
-        final Stage[] geometrySettingsWindow = {null};
-        Button geometrySettingsButton = new Button("Vehicle Geometry\u2026");
-        geometrySettingsButton.getStyleClass().add("ghost-button");
-        geometrySettingsButton.setMaxWidth(Double.MAX_VALUE);
-        geometrySettingsButton.setOnAction(e -> {
-            if (geometrySettingsWindow[0] == null) {
-                geometrySettingsWindow[0] = createSettingsWindow(
-                        owner, "Vehicle Geometry",
-                        buildGeometrySettingsContent(networkPanel), 460, 860);
-                geometrySettingsWindow[0].setOnHidden(event -> geometrySettingsWindow[0] = null);
-            }
-            geometrySettingsWindow[0].show();
-            geometrySettingsWindow[0].toFront();
-        });
-
-        card.getChildren().addAll(queueToggle, offsetCaption, offsetSlider, offsetValue, colorSettingsButton, geometrySettingsButton);
+        card.getChildren().addAll(queueToggle, offsetCaption, offsetSlider, offsetValue, colorSettingsButton);
         return card;
     }
 
@@ -376,12 +372,213 @@ public final class FxVisualizerApp extends Application {
         VBox content = new VBox(12);
         content.getStyleClass().add("side-content");
         content.setPadding(new Insets(12));
-        content.getChildren().add(buildVehicleCard(networkPanel));
 
-        ScrollPane scrollPane = new ScrollPane(content);
+        VBox paramArea = new VBox(8);
+        paramArea.getStyleClass().add("card");
+
+        ComboBox<String> vehicleSelector = new ComboBox<>(FXCollections.observableArrayList(
+                "Car", "Bike", "Truck", "Bus", "Rail / Tram"));
+        vehicleSelector.setValue("Car");
+        vehicleSelector.setMaxWidth(Double.MAX_VALUE);
+
+        Runnable[] refreshParams = {null};
+        refreshParams[0] = () -> {
+            paramArea.getChildren().clear();
+            String selected = vehicleSelector.getValue();
+            if (selected == null) return;
+
+            Label title = new Label(selected + " Parameters");
+            title.getStyleClass().add("card-title");
+            paramArea.getChildren().add(title);
+
+            // Shape
+            Label shapeLabel = new Label("Shape");
+            shapeLabel.getStyleClass().add("field-caption");
+            ComboBox<VehicleShape> shapeCombo = new ComboBox<>(FXCollections.observableArrayList(VehicleShape.values()));
+            shapeCombo.setMaxWidth(Double.MAX_VALUE);
+
+            // Length
+            Label lengthLabel = new Label("Length (m)");
+            lengthLabel.getStyleClass().add("field-caption");
+            Slider lengthSlider;
+            Label lengthValue;
+
+            // Width ratio
+            Label widthLabel = new Label("Width ratio");
+            widthLabel.getStyleClass().add("field-caption");
+            Slider widthSlider;
+            Label widthValue;
+
+            switch (selected) {
+                case "Car" -> {
+                    shapeCombo.setValue(getOnEdt(networkPanel::getCarShape));
+                    shapeCombo.valueProperty().addListener((o, ov, nv) -> { if (nv != null) runOnEdt(() -> networkPanel.setCarShape(nv)); });
+                    lengthSlider = new Slider(2, 20, getOnEdt(networkPanel::getCarLikeVehicleLengthMeters));
+                    lengthSlider.valueProperty().addListener((o, ov, nv) -> runOnEdt(() -> networkPanel.setCarLikeVehicleLengthMeters(nv.doubleValue())));
+                    widthSlider = new Slider(0.10, 2.00, getOnEdt(networkPanel::getCarLikeVehicleWidthRatio));
+                    widthSlider.valueProperty().addListener((o, ov, nv) -> runOnEdt(() -> networkPanel.setCarLikeVehicleWidthRatio(nv.doubleValue())));
+                }
+                case "Bike" -> {
+                    shapeCombo.setValue(getOnEdt(networkPanel::getBikeShape));
+                    shapeCombo.valueProperty().addListener((o, ov, nv) -> { if (nv != null) runOnEdt(() -> networkPanel.setBikeShape(nv)); });
+                    lengthSlider = new Slider(1, 10, getOnEdt(networkPanel::getBikeVehicleLengthMeters));
+                    lengthSlider.valueProperty().addListener((o, ov, nv) -> runOnEdt(() -> networkPanel.setBikeVehicleLengthMeters(nv.doubleValue())));
+                    widthSlider = new Slider(0.10, 2.00, getOnEdt(networkPanel::getBikeVehicleWidthRatio));
+                    widthSlider.valueProperty().addListener((o, ov, nv) -> runOnEdt(() -> networkPanel.setBikeVehicleWidthRatio(nv.doubleValue())));
+                }
+                case "Truck" -> {
+                    shapeCombo.setValue(getOnEdt(networkPanel::getTruckShape));
+                    shapeCombo.valueProperty().addListener((o, ov, nv) -> { if (nv != null) runOnEdt(() -> networkPanel.setTruckShape(nv)); });
+                    lengthSlider = new Slider(4, 30, getOnEdt(networkPanel::getTruckVehicleLengthMeters));
+                    lengthSlider.valueProperty().addListener((o, ov, nv) -> runOnEdt(() -> networkPanel.setTruckVehicleLengthMeters(nv.doubleValue())));
+                    widthSlider = new Slider(0.10, 2.00, getOnEdt(networkPanel::getTruckVehicleWidthRatio));
+                    widthSlider.valueProperty().addListener((o, ov, nv) -> runOnEdt(() -> networkPanel.setTruckVehicleWidthRatio(nv.doubleValue())));
+                }
+                case "Bus" -> {
+                    shapeCombo.setValue(getOnEdt(networkPanel::getBusShape));
+                    shapeCombo.valueProperty().addListener((o, ov, nv) -> { if (nv != null) runOnEdt(() -> networkPanel.setBusShape(nv)); });
+                    lengthSlider = new Slider(4, 25, getOnEdt(networkPanel::getBusVehicleLengthMeters));
+                    lengthSlider.valueProperty().addListener((o, ov, nv) -> runOnEdt(() -> networkPanel.setBusVehicleLengthMeters(nv.doubleValue())));
+                    widthSlider = new Slider(0.10, 2.00, getOnEdt(networkPanel::getBusVehicleWidthRatio));
+                    widthSlider.valueProperty().addListener((o, ov, nv) -> runOnEdt(() -> networkPanel.setBusVehicleWidthRatio(nv.doubleValue())));
+                }
+                default -> { // Rail / Tram
+                    shapeCombo.setValue(getOnEdt(networkPanel::getRailShape));
+                    shapeCombo.valueProperty().addListener((o, ov, nv) -> { if (nv != null) runOnEdt(() -> networkPanel.setRailShape(nv)); });
+                    lengthSlider = new Slider(5, 100, getOnEdt(networkPanel::getRailVehicleLengthMeters));
+                    lengthSlider.valueProperty().addListener((o, ov, nv) -> runOnEdt(() -> networkPanel.setRailVehicleLengthMeters(nv.doubleValue())));
+                    widthSlider = new Slider(0.10, 2.00, getOnEdt(networkPanel::getRailVehicleWidthRatio));
+                    widthSlider.valueProperty().addListener((o, ov, nv) -> runOnEdt(() -> networkPanel.setRailVehicleWidthRatio(nv.doubleValue())));
+                }
+            }
+
+            lengthValue = new Label(String.format("%.1f", lengthSlider.getValue()));
+            lengthValue.getStyleClass().add("mono-value");
+            lengthSlider.valueProperty().addListener((o, ov, nv) -> lengthValue.setText(String.format("%.1f", nv.doubleValue())));
+
+            widthValue = new Label(String.format("%.2f", widthSlider.getValue()));
+            widthValue.getStyleClass().add("mono-value");
+            widthSlider.valueProperty().addListener((o, ov, nv) -> widthValue.setText(String.format("%.2f", nv.doubleValue())));
+
+            paramArea.getChildren().addAll(
+                    shapeLabel, shapeCombo,
+                    lengthLabel, lengthSlider, lengthValue,
+                    widthLabel, widthSlider, widthValue
+            );
+        };
+
+        vehicleSelector.valueProperty().addListener((o, ov, nv) -> refreshParams[0].run());
+        refreshParams[0].run();
+
+        // Global visibility settings
+        VBox globalCard = createCard("Visibility");
+
+        CheckBox visibilityBoost = new CheckBox("Keep vehicles noticeable when zoomed out");
+        visibilityBoost.setSelected(getOnEdt(networkPanel::isKeepVehiclesVisibleWhenZoomedOut));
+        visibilityBoost.setOnAction(e -> runOnEdt(() ->
+                networkPanel.setKeepVehiclesVisibleWhenZoomedOut(visibilityBoost.isSelected())
+        ));
+
+        Label minLengthPxLabel = new Label("Min visible length (px)");
+        minLengthPxLabel.getStyleClass().add("field-caption");
+        Slider minLengthPxSlider = new Slider(0.5, 30.0, getOnEdt(networkPanel::getMinVehicleLengthPixels));
+        Label minLengthPxValue = new Label(String.format("%.1f", minLengthPxSlider.getValue()));
+        minLengthPxValue.getStyleClass().add("mono-value");
+        minLengthPxSlider.valueProperty().addListener((obs, oldValue, newValue) -> {
+            runOnEdt(() -> networkPanel.setMinVehicleLengthPixels(newValue.doubleValue()));
+            minLengthPxValue.setText(String.format("%.1f", newValue.doubleValue()));
+        });
+
+        Label minWidthPxLabel = new Label("Min visible width (px)");
+        minWidthPxLabel.getStyleClass().add("field-caption");
+        Slider minWidthPxSlider = new Slider(0.5, 30.0, getOnEdt(networkPanel::getMinVehicleWidthPixels));
+        Label minWidthPxValue = new Label(String.format("%.1f", minWidthPxSlider.getValue()));
+        minWidthPxValue.getStyleClass().add("mono-value");
+        minWidthPxSlider.valueProperty().addListener((obs, oldValue, newValue) -> {
+            runOnEdt(() -> networkPanel.setMinVehicleWidthPixels(newValue.doubleValue()));
+            minWidthPxValue.setText(String.format("%.1f", newValue.doubleValue()));
+        });
+
+        globalCard.getChildren().addAll(
+                visibilityBoost,
+                minLengthPxLabel, minLengthPxSlider, minLengthPxValue,
+                minWidthPxLabel, minWidthPxSlider, minWidthPxValue
+        );
+
+        VBox wrapper = new VBox(12);
+        wrapper.getStyleClass().add("side-content");
+        wrapper.setPadding(new Insets(12));
+
+        VBox selectorCard = createCard("Select Vehicle Type");
+        selectorCard.getChildren().add(vehicleSelector);
+
+        wrapper.getChildren().addAll(selectorCard, paramArea, globalCard);
+
+        ScrollPane scrollPane = new ScrollPane(wrapper);
         scrollPane.getStyleClass().add("side-scroll");
         scrollPane.setFitToWidth(true);
         return scrollPane;
+    }
+
+    private VBox buildAppearanceCard(Stage owner, NetworkPanel networkPanel) {
+        VBox card = createCard("Appearance");
+
+        // Theme toggle
+        CheckBox themeToggle = new CheckBox("Light Theme");
+        themeToggle.setSelected(!getOnEdt(networkPanel::isDarkTheme));
+        themeToggle.setOnAction(e -> {
+            boolean light = themeToggle.isSelected();
+            runOnEdt(() -> networkPanel.setDarkTheme(!light));
+            if (mainScene != null) {
+                mainScene.getStylesheets().clear();
+                mainScene.getStylesheets().add(light ? LIGHT_CSS : DARK_CSS);
+            }
+        });
+
+        // Road color
+        Label roadLabel = new Label("Road color");
+        roadLabel.getStyleClass().add("field-caption");
+        ColorPicker roadPicker = new ColorPicker(toFx(getOnEdt(networkPanel::getMapRoad)));
+        roadPicker.setMaxWidth(Double.MAX_VALUE);
+        roadPicker.setOnAction(e -> runOnEdt(() -> networkPanel.setMapRoad(toAwt(roadPicker.getValue()))));
+
+        // Background color
+        Label bgLabel = new Label("Background color");
+        bgLabel.getStyleClass().add("field-caption");
+        ColorPicker bgPicker = new ColorPicker(toFx(getOnEdt(networkPanel::getMapBackground)));
+        bgPicker.setMaxWidth(Double.MAX_VALUE);
+        bgPicker.setOnAction(e -> runOnEdt(() -> networkPanel.setMapBackground(toAwt(bgPicker.getValue()))));
+
+        // Update pickers when theme toggles
+        themeToggle.setOnAction(e -> {
+            boolean light = themeToggle.isSelected();
+            runOnEdt(() -> networkPanel.setDarkTheme(!light));
+            if (mainScene != null) {
+                mainScene.getStylesheets().clear();
+                mainScene.getStylesheets().add(light ? LIGHT_CSS : DARK_CSS);
+            }
+            roadPicker.setValue(toFx(getOnEdt(networkPanel::getMapRoad)));
+            bgPicker.setValue(toFx(getOnEdt(networkPanel::getMapBackground)));
+        });
+
+        // Vehicle Settings button
+        final Stage[] vehicleSettingsWindow = {null};
+        Button vehicleSettingsButton = new Button("Vehicle Settings\u2026");
+        vehicleSettingsButton.getStyleClass().add("ghost-button");
+        vehicleSettingsButton.setMaxWidth(Double.MAX_VALUE);
+        vehicleSettingsButton.setOnAction(e -> {
+            if (vehicleSettingsWindow[0] == null) {
+                vehicleSettingsWindow[0] = createSettingsWindow(
+                        owner, "Vehicle Settings",
+                        buildGeometrySettingsContent(networkPanel), 460, 700);
+                vehicleSettingsWindow[0].setOnHidden(event -> vehicleSettingsWindow[0] = null);
+            }
+            vehicleSettingsWindow[0].show();
+            vehicleSettingsWindow[0].toFront();
+        });
+
+        card.getChildren().addAll(themeToggle, roadLabel, roadPicker, bgLabel, bgPicker, vehicleSettingsButton);
+        return card;
     }
 
     private Stage createSettingsWindow(Stage owner, String title, Node content, double width, double height) {
@@ -389,10 +586,8 @@ public final class FxVisualizerApp extends Application {
         window.initOwner(owner);
         window.setTitle(title);
         Scene scene = new Scene(new BorderPane(content), width, height);
-        scene.getStylesheets().add(Objects.requireNonNull(
-                FxVisualizerApp.class.getResource("/com/matsim/viz/ui/fx/theme.css"),
-                "JavaFX stylesheet not found"
-        ).toExternalForm());
+        String css = (mainScene != null && mainScene.getStylesheets().contains(LIGHT_CSS)) ? LIGHT_CSS : DARK_CSS;
+        scene.getStylesheets().add(css);
         window.setScene(scene);
         return window;
     }
@@ -584,141 +779,6 @@ public final class FxVisualizerApp extends Application {
 
         refreshRows.run();
         card.getChildren().addAll(top, rows);
-        return card;
-    }
-
-    private VBox buildVehicleCard(NetworkPanel networkPanel) {
-        VBox card = createCard("Vehicle Geometry");
-
-        Label carLabel = new Label("Car length (m)");
-        Slider carSlider = new Slider(2, 20, getOnEdt(networkPanel::getCarLikeVehicleLengthMeters));
-        Label carValue = new Label(String.format("%.1f", carSlider.getValue()));
-        carValue.getStyleClass().add("mono-value");
-        carSlider.valueProperty().addListener((obs, oldValue, newValue) -> {
-            runOnEdt(() -> networkPanel.setCarLikeVehicleLengthMeters(newValue.doubleValue()));
-            carValue.setText(String.format("%.1f", newValue.doubleValue()));
-        });
-
-        Label carWidthLabel = new Label("Car width ratio");
-        Slider carWidthSlider = new Slider(0.10, 2.00, getOnEdt(networkPanel::getCarLikeVehicleWidthRatio));
-        Label carWidthValue = new Label(String.format("%.2f", carWidthSlider.getValue()));
-        carWidthValue.getStyleClass().add("mono-value");
-        carWidthSlider.valueProperty().addListener((obs, oldValue, newValue) -> {
-            runOnEdt(() -> networkPanel.setCarLikeVehicleWidthRatio(newValue.doubleValue()));
-            carWidthValue.setText(String.format("%.2f", newValue.doubleValue()));
-        });
-
-        Label bikeLabel = new Label("Bike length (m)");
-        Slider bikeSlider = new Slider(1, 10, getOnEdt(networkPanel::getBikeVehicleLengthMeters));
-        Label bikeValue = new Label(String.format("%.1f", bikeSlider.getValue()));
-        bikeValue.getStyleClass().add("mono-value");
-        bikeSlider.valueProperty().addListener((obs, oldValue, newValue) -> {
-            runOnEdt(() -> networkPanel.setBikeVehicleLengthMeters(newValue.doubleValue()));
-            bikeValue.setText(String.format("%.1f", newValue.doubleValue()));
-        });
-
-        Label bikeWidthLabel = new Label("Bike width ratio");
-        Slider bikeWidthSlider = new Slider(0.10, 2.00, getOnEdt(networkPanel::getBikeVehicleWidthRatio));
-        Label bikeWidthValue = new Label(String.format("%.2f", bikeWidthSlider.getValue()));
-        bikeWidthValue.getStyleClass().add("mono-value");
-        bikeWidthSlider.valueProperty().addListener((obs, oldValue, newValue) -> {
-            runOnEdt(() -> networkPanel.setBikeVehicleWidthRatio(newValue.doubleValue()));
-            bikeWidthValue.setText(String.format("%.2f", newValue.doubleValue()));
-        });
-
-        Label truckLabel = new Label("Truck length (m)");
-        Slider truckSlider = new Slider(4, 30, getOnEdt(networkPanel::getTruckVehicleLengthMeters));
-        Label truckValue = new Label(String.format("%.1f", truckSlider.getValue()));
-        truckValue.getStyleClass().add("mono-value");
-        truckSlider.valueProperty().addListener((obs, oldValue, newValue) -> {
-            runOnEdt(() -> networkPanel.setTruckVehicleLengthMeters(newValue.doubleValue()));
-            truckValue.setText(String.format("%.1f", newValue.doubleValue()));
-        });
-
-        Label truckWidthLabel = new Label("Truck width ratio");
-        Slider truckWidthSlider = new Slider(0.10, 2.00, getOnEdt(networkPanel::getTruckVehicleWidthRatio));
-        Label truckWidthValue = new Label(String.format("%.2f", truckWidthSlider.getValue()));
-        truckWidthValue.getStyleClass().add("mono-value");
-        truckWidthSlider.valueProperty().addListener((obs, oldValue, newValue) -> {
-            runOnEdt(() -> networkPanel.setTruckVehicleWidthRatio(newValue.doubleValue()));
-            truckWidthValue.setText(String.format("%.2f", newValue.doubleValue()));
-        });
-
-        Label busLabel = new Label("Bus length (m)");
-        Slider busSlider = new Slider(4, 25, getOnEdt(networkPanel::getBusVehicleLengthMeters));
-        Label busValue = new Label(String.format("%.1f", busSlider.getValue()));
-        busValue.getStyleClass().add("mono-value");
-        busSlider.valueProperty().addListener((obs, oldValue, newValue) -> {
-            runOnEdt(() -> networkPanel.setBusVehicleLengthMeters(newValue.doubleValue()));
-            busValue.setText(String.format("%.1f", newValue.doubleValue()));
-        });
-
-        Label busWidthLabel = new Label("Bus width ratio");
-        Slider busWidthSlider = new Slider(0.10, 2.00, getOnEdt(networkPanel::getBusVehicleWidthRatio));
-        Label busWidthValue = new Label(String.format("%.2f", busWidthSlider.getValue()));
-        busWidthValue.getStyleClass().add("mono-value");
-        busWidthSlider.valueProperty().addListener((obs, oldValue, newValue) -> {
-            runOnEdt(() -> networkPanel.setBusVehicleWidthRatio(newValue.doubleValue()));
-            busWidthValue.setText(String.format("%.2f", newValue.doubleValue()));
-        });
-
-        Label railLabel = new Label("Rail/Tram length (m)");
-        Slider railSlider = new Slider(5, 100, getOnEdt(networkPanel::getRailVehicleLengthMeters));
-        Label railValue = new Label(String.format("%.1f", railSlider.getValue()));
-        railValue.getStyleClass().add("mono-value");
-        railSlider.valueProperty().addListener((obs, oldValue, newValue) -> {
-            runOnEdt(() -> networkPanel.setRailVehicleLengthMeters(newValue.doubleValue()));
-            railValue.setText(String.format("%.1f", newValue.doubleValue()));
-        });
-
-        Label railWidthLabel = new Label("Rail/Tram width ratio");
-        Slider railWidthSlider = new Slider(0.10, 2.00, getOnEdt(networkPanel::getRailVehicleWidthRatio));
-        Label railWidthValue = new Label(String.format("%.2f", railWidthSlider.getValue()));
-        railWidthValue.getStyleClass().add("mono-value");
-        railWidthSlider.valueProperty().addListener((obs, oldValue, newValue) -> {
-            runOnEdt(() -> networkPanel.setRailVehicleWidthRatio(newValue.doubleValue()));
-            railWidthValue.setText(String.format("%.2f", newValue.doubleValue()));
-        });
-
-        CheckBox visibilityBoost = new CheckBox("Keep vehicles noticeable when zoomed out");
-        visibilityBoost.setSelected(getOnEdt(networkPanel::isKeepVehiclesVisibleWhenZoomedOut));
-        visibilityBoost.setOnAction(e -> runOnEdt(() ->
-                networkPanel.setKeepVehiclesVisibleWhenZoomedOut(visibilityBoost.isSelected())
-        ));
-
-        Label minLengthPxLabel = new Label("Min visible length (px)");
-        Slider minLengthPxSlider = new Slider(0.5, 30.0, getOnEdt(networkPanel::getMinVehicleLengthPixels));
-        Label minLengthPxValue = new Label(String.format("%.1f", minLengthPxSlider.getValue()));
-        minLengthPxValue.getStyleClass().add("mono-value");
-        minLengthPxSlider.valueProperty().addListener((obs, oldValue, newValue) -> {
-            runOnEdt(() -> networkPanel.setMinVehicleLengthPixels(newValue.doubleValue()));
-            minLengthPxValue.setText(String.format("%.1f", newValue.doubleValue()));
-        });
-
-        Label minWidthPxLabel = new Label("Min visible width (px)");
-        Slider minWidthPxSlider = new Slider(0.5, 30.0, getOnEdt(networkPanel::getMinVehicleWidthPixels));
-        Label minWidthPxValue = new Label(String.format("%.1f", minWidthPxSlider.getValue()));
-        minWidthPxValue.getStyleClass().add("mono-value");
-        minWidthPxSlider.valueProperty().addListener((obs, oldValue, newValue) -> {
-            runOnEdt(() -> networkPanel.setMinVehicleWidthPixels(newValue.doubleValue()));
-            minWidthPxValue.setText(String.format("%.1f", newValue.doubleValue()));
-        });
-
-        card.getChildren().addAll(
-                carLabel, carSlider, carValue,
-                carWidthLabel, carWidthSlider, carWidthValue,
-                bikeLabel, bikeSlider, bikeValue,
-                bikeWidthLabel, bikeWidthSlider, bikeWidthValue,
-                truckLabel, truckSlider, truckValue,
-                truckWidthLabel, truckWidthSlider, truckWidthValue,
-                busLabel, busSlider, busValue,
-                busWidthLabel, busWidthSlider, busWidthValue,
-                railLabel, railSlider, railValue,
-                railWidthLabel, railWidthSlider, railWidthValue,
-                visibilityBoost,
-                minLengthPxLabel, minLengthPxSlider, minLengthPxValue,
-                minWidthPxLabel, minWidthPxSlider, minWidthPxValue
-        );
         return card;
     }
 
