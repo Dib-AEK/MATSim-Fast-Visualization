@@ -14,15 +14,19 @@ import com.matsim.viz.parser.MatsimScenarioBundle;
 import com.matsim.viz.parser.MatsimScenarioLoader;
 import com.matsim.viz.parser.PlansXmlPurposeTimelineParser;
 import com.matsim.viz.parser.ResolvedSimulationInputs;
+import com.matsim.viz.parser.TransitScheduleData;
 import com.matsim.viz.parser.TransitScheduleParser;
 import com.matsim.viz.parser.TripsPurposeTimelineParser;
 import com.matsim.viz.ui.fx.FxVisualizerApp;
 
+import java.io.IOException;
 import java.nio.file.Path;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+
+import com.matsim.viz.domain.PtStopPoint;
 
 public final class Main {
     private Main() {
@@ -34,7 +38,7 @@ public final class Main {
 
         Path configPath = Path.of("config", "app.properties").toAbsolutePath();
         AppConfig config = ConfigLoader.load(configPath);
-        configureJava2dAcceleration(config);
+        configureRenderingBackend(config);
         MatsimScenarioLoader scenarioLoader = new MatsimScenarioLoader();
         ResolvedSimulationInputs inputs = scenarioLoader.resolveInputs(config);
         String cacheKey = SimulationFingerprint.fromInputs(inputs);
@@ -62,38 +66,72 @@ public final class Main {
 
         CachedSimulationData cached;
         boolean loadedFromCache = false;
+        boolean cacheInvalidated = false;
 
         if (cacheStore.exists(cacheKey) && !options.overwriteCache) {
-            long cacheLoadStart = System.nanoTime();
-            cached = cacheStore.load(cacheKey);
-            loadedFromCache = true;
-            System.out.printf("Loaded cache in %.2fs%n", seconds(System.nanoTime() - cacheLoadStart));
+            try {
+                long cacheLoadStart = System.nanoTime();
+                cached = cacheStore.load(cacheKey);
+                loadedFromCache = true;
+                System.out.printf("Loaded cache in %.2fs%n", seconds(System.nanoTime() - cacheLoadStart));
+            } catch (IOException ex) {
+                System.out.println("Warning: cache is incompatible or corrupted for key " + cacheKey + ": " + ex.getMessage());
+                if (options.guiOnly) {
+                    throw new IllegalStateException(
+                            "Cached data could not be loaded in --gui-only mode. Re-run without --gui-only to rebuild cache.",
+                            ex
+                    );
+                }
+
+                cacheStore.delete(cacheKey);
+                cacheInvalidated = true;
+                cached = null;
+            }
         } else {
+            cached = null;
+        }
+
+        if (cached == null) {
             if (options.guiOnly) {
                 throw new IllegalStateException("No cache found for this simulation. Run once without --gui-only to build cache.");
+            }
+
+            if (cacheInvalidated) {
+                System.out.println("Rebuilding cache due to cache format/code changes...");
             }
 
             long t1 = System.nanoTime();
             MatsimScenarioBundle scenarioBundle = scenarioLoader.load(inputs);
             long t2 = System.nanoTime();
-            EventsParseResult events = new MatsimEventsProcessor().readTraversals(inputs.eventsFile());
+            TransitScheduleData transitScheduleData = new TransitScheduleData(Map.of(), Map.of());
+            if (inputs.transitScheduleFile() != null) {
+                long ptStart = System.nanoTime();
+                transitScheduleData = TransitScheduleParser.parse(inputs.transitScheduleFile());
+                System.out.printf("Parsed transit schedule in %.2fs (%d PT vehicles, %d stops)%n",
+                        seconds(System.nanoTime() - ptStart),
+                        transitScheduleData.vehicleToMode().size(),
+                        transitScheduleData.stopsById().size());
+            }
+
+            EventsParseResult events = new MatsimEventsProcessor().readTraversals(
+                    inputs.eventsFile(),
+                    transitScheduleData.vehicleToMode()
+            );
             long t3 = System.nanoTime();
 
             Map<String, String> mergedVehicleToMode = new HashMap<>(events.vehicleToMode());
-            if (inputs.transitScheduleFile() != null) {
-                long ptStart = System.nanoTime();
-                Map<String, String> ptModes = TransitScheduleParser.parseVehicleModes(inputs.transitScheduleFile());
-                mergedVehicleToMode.putAll(ptModes);
-                System.out.printf("Parsed transit schedule in %.2fs (%d PT vehicles)%n",
-                        seconds(System.nanoTime() - ptStart), ptModes.size());
-            }
+            mergedVehicleToMode.putAll(transitScheduleData.vehicleToMode());
+
+            Map<String, PtStopPoint> ptStopsById = transitScheduleData.stopsById();
 
             cached = new CachedSimulationData(
                     scenarioBundle.networkData(),
                     events.traversals(),
                     events.vehicleToPerson(),
                     mergedVehicleToMode,
-                    scenarioBundle.metadataByPerson()
+                    scenarioBundle.metadataByPerson(),
+                    ptStopsById,
+                    events.ptStopInteractions()
             );
 
             long saveStart = System.nanoTime();
@@ -141,7 +179,9 @@ public final class Main {
                 cached.vehicleToPerson(),
                 cached.vehicleToMode(),
                 cached.metadataByPerson(),
-                tripPurposeWindowsByPerson
+                tripPurposeWindowsByPerson,
+                cached.ptStopsById(),
+                cached.ptStopInteractions()
         );
 
         double startTime = Math.max(config.playbackStartSeconds(), model.minTime());
@@ -183,10 +223,46 @@ public final class Main {
         return nanos / 1_000_000_000.0;
     }
 
-    private static void configureJava2dAcceleration(AppConfig config) {
-        String pipeline = config.java2dPipeline() == null
+    private static void configureRenderingBackend(AppConfig config) {
+        String backend = config.renderBackend() == null
                 ? "auto"
-                : config.java2dPipeline().trim().toLowerCase();
+                : config.renderBackend().trim().toLowerCase();
+
+        String os = System.getProperty("os.name", "").toLowerCase();
+        String prismOrder = os.contains("win") ? "d3d,es2,sw" : "es2,sw";
+
+        switch (backend) {
+            case "cpu", "software", "sw" -> {
+                System.setProperty("prism.order", "sw");
+                System.setProperty("sun.java2d.noddraw", "true");
+                System.setProperty("sun.java2d.opengl", "false");
+                System.setProperty("sun.java2d.d3d", "false");
+                configureJava2dAcceleration("none", false);
+            }
+            case "gpu", "hardware", "hw" -> {
+                System.setProperty("prism.order", prismOrder);
+                configureJava2dAcceleration(config.java2dPipeline(), config.java2dForceVram());
+            }
+            case "auto" -> {
+                // Prefer GPU but always include software pipeline fallback.
+                System.setProperty("prism.order", prismOrder);
+                configureJava2dAcceleration(config.java2dPipeline(), config.java2dForceVram());
+            }
+            default -> {
+                System.out.println("Unknown render.backend='" + backend + "'. Falling back to auto mode.");
+                System.setProperty("prism.order", prismOrder);
+                configureJava2dAcceleration(config.java2dPipeline(), config.java2dForceVram());
+                backend = "auto";
+            }
+        }
+
+        System.out.println("Render backend setting: " + backend + ", prism.order=" + System.getProperty("prism.order"));
+    }
+
+    private static void configureJava2dAcceleration(String configuredPipeline, boolean forceVram) {
+        String pipeline = configuredPipeline == null
+                ? "auto"
+                : configuredPipeline.trim().toLowerCase();
 
         switch (pipeline) {
             case "none" -> {
@@ -205,13 +281,13 @@ public final class Main {
             default -> System.out.println("Unknown render.java2d.pipeline='" + pipeline + "'. Using JVM defaults.");
         }
 
-        if (config.java2dForceVram()) {
+        if (forceVram) {
             System.setProperty("sun.java2d.ddforcevram", "true");
             System.setProperty("sun.java2d.accthreshold", "0");
         }
 
         System.out.println("Java2D pipeline setting: " + pipeline
-                + ", forceVram=" + config.java2dForceVram());
+                + ", forceVram=" + forceVram);
     }
 
     private record RunOptions(boolean overwriteCache, boolean buildCacheOnly, boolean guiOnly) {

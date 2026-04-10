@@ -5,10 +5,15 @@ import org.matsim.core.events.EventsUtils;
 import org.matsim.core.events.MatsimEventsReader;
 
 import java.nio.file.Path;
+import java.util.Map;
 
 public final class MatsimEventsProcessor {
     public EventsParseResult readTraversals(Path eventsFile) {
-        MatsimEventsCollector collector = new MatsimEventsCollector();
+        return readTraversals(eventsFile, Map.of());
+    }
+
+    public EventsParseResult readTraversals(Path eventsFile, Map<String, String> knownVehicleModes) {
+        MatsimEventsCollector collector = new MatsimEventsCollector(knownVehicleModes);
         EventsManager eventsManager = EventsUtils.createEventsManager();
         eventsManager.addHandler(collector);
 

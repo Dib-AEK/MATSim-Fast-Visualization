@@ -7,6 +7,8 @@ C:\Users\dabdelkader\Desktop\work\codes\MATSim-Fast-Visualization\src\main\java\
 C:\Users\dabdelkader\Desktop\work\codes\MATSim-Fast-Visualization\src\main\java\com\matsim\viz\domain\LinkSegment.java
 C:\Users\dabdelkader\Desktop\work\codes\MATSim-Fast-Visualization\src\main\java\com\matsim\viz\domain\NetworkData.java
 C:\Users\dabdelkader\Desktop\work\codes\MATSim-Fast-Visualization\src\main\java\com\matsim\viz\domain\NodePoint.java
+C:\Users\dabdelkader\Desktop\work\codes\MATSim-Fast-Visualization\src\main\java\com\matsim\viz\domain\PtStopInteraction.java
+C:\Users\dabdelkader\Desktop\work\codes\MATSim-Fast-Visualization\src\main\java\com\matsim\viz\domain\PtStopPoint.java
 C:\Users\dabdelkader\Desktop\work\codes\MATSim-Fast-Visualization\src\main\java\com\matsim\viz\domain\TripPurposeWindow.java
 C:\Users\dabdelkader\Desktop\work\codes\MATSim-Fast-Visualization\src\main\java\com\matsim\viz\domain\VehicleMetadata.java
 C:\Users\dabdelkader\Desktop\work\codes\MATSim-Fast-Visualization\src\main\java\com\matsim\viz\domain\VehicleShape.java
@@ -29,9 +31,12 @@ C:\Users\dabdelkader\Desktop\work\codes\MATSim-Fast-Visualization\src\main\java\
 C:\Users\dabdelkader\Desktop\work\codes\MATSim-Fast-Visualization\src\main\java\com\matsim\viz\parser\PopulationMetadataExtractor.java
 C:\Users\dabdelkader\Desktop\work\codes\MATSim-Fast-Visualization\src\main\java\com\matsim\viz\parser\ResolvedSimulationInputs.java
 C:\Users\dabdelkader\Desktop\work\codes\MATSim-Fast-Visualization\src\main\java\com\matsim\viz\parser\SimpleCsv.java
+C:\Users\dabdelkader\Desktop\work\codes\MATSim-Fast-Visualization\src\main\java\com\matsim\viz\parser\TransitScheduleData.java
 C:\Users\dabdelkader\Desktop\work\codes\MATSim-Fast-Visualization\src\main\java\com\matsim\viz\parser\TransitScheduleParser.java
 C:\Users\dabdelkader\Desktop\work\codes\MATSim-Fast-Visualization\src\main\java\com\matsim\viz\parser\TripsCsvParser.java
 C:\Users\dabdelkader\Desktop\work\codes\MATSim-Fast-Visualization\src\main\java\com\matsim\viz\parser\TripsPurposeTimelineParser.java
+C:\Users\dabdelkader\Desktop\work\codes\MATSim-Fast-Visualization\src\main\java\com\matsim\viz\ui\editor\NetworkEditorPanel.java
+C:\Users\dabdelkader\Desktop\work\codes\MATSim-Fast-Visualization\src\main\java\com\matsim\viz\ui\editor\OsmTileCache.java
 C:\Users\dabdelkader\Desktop\work\codes\MATSim-Fast-Visualization\src\main\java\com\matsim\viz\ui\fx\FxVisualizerApp.java
 C:\Users\dabdelkader\Desktop\work\codes\MATSim-Fast-Visualization\src\main\java\com\matsim\viz\ui\LinkFilter.java
 C:\Users\dabdelkader\Desktop\work\codes\MATSim-Fast-Visualization\src\main\java\com\matsim\viz\ui\NetworkPanel.java

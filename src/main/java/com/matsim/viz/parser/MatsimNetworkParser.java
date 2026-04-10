@@ -69,6 +69,19 @@ public final class MatsimNetworkParser {
                         double length = parseDouble(attributes.getValue("length"), distance(from, to));
                         double freeSpeed = parseDouble(attributes.getValue("freespeed"), 0.0);
                         double lanes = parseDouble(attributes.getValue("permlanes"), 1.0);
+                        Map<String, String> linkAttributes = new HashMap<>();
+                        String capacityRaw = attributes.getValue("capacity");
+                        if (capacityRaw != null && !capacityRaw.isBlank()) {
+                            linkAttributes.put("capacity", capacityRaw);
+                        }
+                        String onewayRaw = attributes.getValue("oneway");
+                        if (onewayRaw != null && !onewayRaw.isBlank()) {
+                            linkAttributes.put("oneway", onewayRaw);
+                        }
+                        String typeRaw = attributes.getValue("type");
+                        if (typeRaw != null && !typeRaw.isBlank()) {
+                            linkAttributes.put("type", typeRaw);
+                        }
                         Set<String> allowedModes = parseAllowedModes(attributes.getValue("modes"));
                         links.put(id, new LinkSegment(
                                 id,
@@ -81,7 +94,8 @@ public final class MatsimNetworkParser {
                                 length,
                                 freeSpeed,
                                 lanes,
-                                allowedModes
+                                allowedModes,
+                                linkAttributes
                         ));
                     }
                 }

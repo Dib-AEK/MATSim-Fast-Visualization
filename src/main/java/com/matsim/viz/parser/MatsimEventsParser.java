@@ -1,6 +1,7 @@
 package com.matsim.viz.parser;
 
 import com.matsim.viz.domain.VehicleTraversal;
+import com.matsim.viz.domain.PtStopInteraction;
 import org.xml.sax.Attributes;
 import org.xml.sax.SAXException;
 import org.xml.sax.helpers.DefaultHandler;
@@ -66,7 +67,12 @@ public final class MatsimEventsParser {
             });
         }
 
-        return new EventsParseResult(traversals.toArray(new VehicleTraversal[0]), vehicleToPerson, Map.of());
+        return new EventsParseResult(
+            traversals.toArray(new VehicleTraversal[0]),
+            vehicleToPerson,
+            Map.<String, String>of(),
+            new PtStopInteraction[0]
+        );
     }
 
     private static void appendTraversal(List<VehicleTraversal> traversals, String vehicleId, String linkId, double enter, double leave) {

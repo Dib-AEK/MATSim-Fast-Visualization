@@ -8,6 +8,7 @@ import com.matsim.viz.engine.SimulationModel;
 import com.matsim.viz.ui.NetworkPanel;
 import com.matsim.viz.ui.PanelVideoRecorder;
 import com.matsim.viz.ui.TimeFormat;
+import com.matsim.viz.ui.editor.NetworkEditorPanel;
 import javafx.animation.AnimationTimer;
 import javafx.application.Application;
 import javafx.application.Platform;
@@ -20,6 +21,7 @@ import javafx.scene.Node;
 import javafx.scene.Scene;
 import javafx.scene.control.Alert;
 import javafx.scene.control.Button;
+import javafx.scene.control.ButtonType;
 import javafx.scene.control.CheckBox;
 import javafx.scene.control.ColorPicker;
 import javafx.scene.control.ComboBox;
@@ -28,6 +30,8 @@ import javafx.scene.control.ScrollPane;
 import javafx.scene.control.Slider;
 import javafx.scene.control.TextField;
 import javafx.scene.control.TitledPane;
+import javafx.scene.control.TreeItem;
+import javafx.scene.control.TreeView;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
@@ -36,10 +40,12 @@ import javafx.scene.layout.VBox;
 import javafx.scene.paint.Color;
 import javafx.stage.Screen;
 import javafx.stage.Stage;
+import javafx.stage.FileChooser;
 
 import javax.swing.SwingUtilities;
 import java.awt.Dimension;
 import java.io.IOException;
+import java.lang.reflect.Method;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -68,6 +74,7 @@ public final class FxVisualizerApp extends Application {
     private Scene mainScene;
     private ExecutorService heatmapPreprocessExecutor;
     private volatile boolean heatmapPreprocessInProgress;
+    private Stage networkEditorStage;
 
     private static final String DARK_CSS = Objects.requireNonNull(
             FxVisualizerApp.class.getResource("/com/matsim/viz/ui/fx/theme.css"),
@@ -147,6 +154,10 @@ public final class FxVisualizerApp extends Application {
             if (videoRecorder.isRecording()) {
                 try { videoRecorder.stop(); } catch (IOException ignored) { }
             }
+            if (networkEditorStage != null) {
+                networkEditorStage.close();
+                networkEditorStage = null;
+            }
             if (heatmapPreprocessExecutor != null) {
                 heatmapPreprocessExecutor.shutdownNow();
             }
@@ -190,6 +201,11 @@ public final class FxVisualizerApp extends Application {
         speedValue.getStyleClass().add("mono-value");
         speedSlider.valueProperty().addListener((obs, oldValue, newValue) -> speedValue.setText(formatSpeed(newValue.doubleValue())));
 
+        Label rendererCaption = new Label("Renderer");
+        rendererCaption.getStyleClass().add("field-caption");
+        Label rendererValue = new Label(detectRendererMode());
+        rendererValue.getStyleClass().add("mono-value");
+
         Label windowCaption = new Label("Window");
         windowCaption.getStyleClass().add("field-caption");
         ComboBox<String> windowModeCombo = new ComboBox<>(FXCollections.observableArrayList("Windowed", "Fullscreen"));
@@ -201,7 +217,7 @@ public final class FxVisualizerApp extends Application {
         List<DisplayScreenOption> screenOptions = buildScreenOptions();
         ComboBox<DisplayScreenOption> screenCombo = new ComboBox<>(FXCollections.observableArrayList(screenOptions));
         screenCombo.setPrefWidth(170);
-        DisplayScreenOption initialScreen = closestScreenOption(screenOptions, owner);
+        DisplayScreenOption initialScreen = largestScreenOption(screenOptions);
         if (initialScreen != null) {
             screenCombo.setValue(initialScreen);
         }
@@ -299,6 +315,28 @@ public final class FxVisualizerApp extends Application {
             }
         });
 
+        Platform.runLater(() -> {
+            DisplayScreenOption largest = largestScreenOption(screenOptions);
+            applyingWindowMode[0] = true;
+            try {
+                if (largest != null) {
+                    screenCombo.setValue(largest);
+                }
+
+                owner.setFullScreen(false);
+                owner.setMaximized(false);
+
+                Screen target = largest == null ? Screen.getPrimary() : largest.screen();
+                moveStageToScreen(owner, target, true);
+
+                captureWindowedBounds.run();
+                owner.setFullScreen(true);
+                windowModeCombo.setValue("Fullscreen");
+            } finally {
+                applyingWindowMode[0] = false;
+            }
+        });
+
         Button quitButton = new Button("Quit");
         quitButton.getStyleClass().add("danger-button");
         quitButton.setOnAction(e -> Platform.exit());
@@ -370,6 +408,8 @@ public final class FxVisualizerApp extends Application {
                 speedCaption,
                 speedSlider,
                 speedValue,
+                rendererCaption,
+                rendererValue,
                 windowCaption,
                 windowModeCombo,
                 screenCaption,
@@ -399,15 +439,32 @@ public final class FxVisualizerApp extends Application {
         content.setPadding(new Insets(12));
 
         VBox visualizationCard = createCard("Visualization");
-        ComboBox<NetworkPanel.VisualizationMode> visualizationModeCombo = new ComboBox<>(
-            FXCollections.observableArrayList(NetworkPanel.VisualizationMode.values())
+        ComboBox<VisualizationLayerChoice> visualizationModeCombo = new ComboBox<>(
+            FXCollections.observableArrayList(buildVisualizationChoices())
         );
         visualizationModeCombo.setMaxWidth(Double.MAX_VALUE);
-        visualizationModeCombo.setValue(getOnEdt(networkPanel::getVisualizationMode));
+        visualizationModeCombo.setValue(choiceForMode(getOnEdt(networkPanel::getVisualizationMode)));
+        final boolean[] applyingVisualizationChoice = {false};
         visualizationModeCombo.valueProperty().addListener((obs, oldValue, newValue) -> {
-            if (newValue != null) {
-                runOnEdt(() -> networkPanel.setVisualizationMode(newValue));
+            if (newValue == null || applyingVisualizationChoice[0]) {
+                return;
             }
+
+            if (newValue.openNetworkEditor()) {
+                openNetworkEditorWindow(owner, model, networkPanel);
+                applyingVisualizationChoice[0] = true;
+                try {
+                    VisualizationLayerChoice fallback = oldValue != null && !oldValue.openNetworkEditor()
+                            ? oldValue
+                            : choiceForMode(getOnEdt(networkPanel::getVisualizationMode));
+                    visualizationModeCombo.setValue(fallback);
+                } finally {
+                    applyingVisualizationChoice[0] = false;
+                }
+                return;
+            }
+
+            runOnEdt(() -> networkPanel.setVisualizationMode(newValue.mode()));
         });
         visualizationCard.getChildren().add(visualizationModeCombo);
 
@@ -430,6 +487,13 @@ public final class FxVisualizerApp extends Application {
             model.availableTripModes(),
             defaultTransportModes(model.availableTripModes()),
             selected -> runOnEdt(() -> networkPanel.setSelectedHeatmapTripModes(selected))
+        );
+
+        TitledPane ptStopModesCard = buildModeSelectionCard(
+            "PT Stop Modes",
+            model.availablePtStopModes(),
+            defaultTransportModes(model.availablePtStopModes()),
+            selected -> runOnEdt(() -> networkPanel.setSelectedPtStopModes(selected))
         );
 
         Button preprocessButton = new Button("Apply Bin + Preprocess");
@@ -459,6 +523,7 @@ public final class FxVisualizerApp extends Application {
             NetworkPanel.VisualizationMode.SPEED_RATIO_HEATMAP,
             networkPanel
         );
+        VBox ptStopBubbleSizeCard = buildPtStopBubbleSizeCard(networkPanel);
 
         VBox displaySettingsCard = buildDisplaySettingsCard(owner, model, networkPanel);
         VBox appearanceCard = buildAppearanceCard(owner, networkPanel);
@@ -469,24 +534,31 @@ public final class FxVisualizerApp extends Application {
             networkModesCard,
             tripModesCard,
             heatmapTripModesCard,
+            ptStopModesCard,
             heatmapSettingsCard,
             flowHeatmapColorsCard,
             speedHeatmapColorsCard,
             speedRatioHeatmapColorsCard,
+            ptStopBubbleSizeCard,
             displaySettingsCard,
             appearanceCard,
             bottleneckCard
         );
 
         Runnable refreshModePanels = () -> {
-            NetworkPanel.VisualizationMode mode = visualizationModeCombo.getValue();
+            VisualizationLayerChoice currentChoice = visualizationModeCombo.getValue();
+            NetworkPanel.VisualizationMode mode = currentChoice == null
+                ? NetworkPanel.VisualizationMode.VEHICLES
+                : currentChoice.mode();
             if (mode == null) {
             mode = NetworkPanel.VisualizationMode.VEHICLES;
             }
 
             boolean vehicleMode = mode == NetworkPanel.VisualizationMode.VEHICLES;
             boolean flowMode = mode == NetworkPanel.VisualizationMode.FLOW_HEATMAP
-                    || mode == NetworkPanel.VisualizationMode.PT_FLOW_HEATMAP;
+                    || mode == NetworkPanel.VisualizationMode.PT_FLOW_HEATMAP
+                    || mode == NetworkPanel.VisualizationMode.PT_STOP_BUBBLES;
+                boolean ptStopMode = mode == NetworkPanel.VisualizationMode.PT_STOP_BUBBLES;
             boolean speedMode = mode == NetworkPanel.VisualizationMode.SPEED_HEATMAP;
             boolean speedRatioMode = mode == NetworkPanel.VisualizationMode.SPEED_RATIO_HEATMAP;
             boolean allowSeparateNetworkModes = separateNetworkModesToggle.isSelected();
@@ -496,11 +568,13 @@ public final class FxVisualizerApp extends Application {
             setVisibleManaged(displaySettingsCard, vehicleMode);
             setVisibleManaged(bottleneckCard, vehicleMode);
 
-            setVisibleManaged(heatmapTripModesCard, !vehicleMode);
+            setVisibleManaged(heatmapTripModesCard, !vehicleMode && !ptStopMode);
+            setVisibleManaged(ptStopModesCard, ptStopMode);
             setVisibleManaged(heatmapSettingsCard, !vehicleMode);
             setVisibleManaged(flowHeatmapColorsCard, flowMode);
             setVisibleManaged(speedHeatmapColorsCard, speedMode);
             setVisibleManaged(speedRatioHeatmapColorsCard, speedRatioMode);
+            setVisibleManaged(ptStopBubbleSizeCard, ptStopMode);
 
             boolean heatmapMode = !vehicleMode;
             preprocessButton.setDisable(!heatmapMode || heatmapPreprocessInProgress);
@@ -518,6 +592,315 @@ public final class FxVisualizerApp extends Application {
         scrollPane.setMinWidth(300);
 
         return new NodeBundle(scrollPane);
+    }
+
+    private void openNetworkEditorWindow(Stage owner, SimulationModel model, NetworkPanel mainNetworkPanel) {
+        runOnEdt(() -> mainNetworkPanel.setRenderingSuspended(true));
+
+        if (networkEditorStage != null) {
+            networkEditorStage.show();
+            networkEditorStage.toFront();
+            return;
+        }
+
+        Path editorCacheDir = startupCacheDir != null ? startupCacheDir : Path.of("cache");
+        NetworkEditorPanel editorPanel = getOnEdt(() -> new NetworkEditorPanel(model.networkData(), editorCacheDir));
+
+        SwingNode swingNode = new SwingNode();
+        runOnEdt(() -> swingNode.setContent(editorPanel));
+
+        Label selectedType = new Label("Nothing selected");
+        selectedType.getStyleClass().add("field-caption");
+        Label selectedId = new Label("-");
+        selectedId.getStyleClass().add("mono-value");
+        Label selectedMeta = new Label("Click a link or node to inspect details.");
+        selectedMeta.getStyleClass().add("hint");
+        selectedMeta.setWrapText(true);
+
+        TreeView<String> attributesTree = new TreeView<>();
+        attributesTree.setShowRoot(true);
+        attributesTree.setPrefHeight(420);
+        attributesTree.setRoot(new TreeItem<>("No selection"));
+
+        Label crsCaption = new Label("Network Coordinate System");
+        crsCaption.getStyleClass().add("field-caption");
+        ComboBox<NetworkEditorPanel.CoordinateSystem> crsCombo = new ComboBox<>(
+                FXCollections.observableArrayList(NetworkEditorPanel.CoordinateSystem.values())
+        );
+        crsCombo.setMaxWidth(Double.MAX_VALUE);
+        crsCombo.setValue(getOnEdt(editorPanel::getCoordinateSystem));
+        crsCombo.valueProperty().addListener((obs, oldValue, newValue) -> {
+            if (newValue != null) {
+                runOnEdt(() -> editorPanel.setCoordinateSystem(newValue));
+            }
+        });
+
+        List<String> availableEditorModes = getOnEdt(editorPanel::availableLinkModes);
+        Set<String> initiallyVisibleModes = getOnEdt(editorPanel::visibleLinkModes);
+        TitledPane editorLinkModesCard = buildModeSelectionCard(
+                "Network Modes",
+                availableEditorModes,
+                initiallyVisibleModes,
+                selected -> runOnEdt(() -> editorPanel.setVisibleLinkModes(selected))
+        );
+
+        VBox editorColorsCard = createCard("Network Colors");
+        Label linkColorCaption = new Label("Link color");
+        linkColorCaption.getStyleClass().add("field-caption");
+        ColorPicker linkColorPicker = new ColorPicker(toFx(getOnEdt(editorPanel::getLinkColor)));
+        linkColorPicker.setMaxWidth(Double.MAX_VALUE);
+        linkColorPicker.setOnAction(e -> runOnEdt(() -> editorPanel.setLinkColor(toAwt(linkColorPicker.getValue()))));
+
+        Label nodeColorCaption = new Label("Node color");
+        nodeColorCaption.getStyleClass().add("field-caption");
+        ColorPicker nodeColorPicker = new ColorPicker(toFx(getOnEdt(editorPanel::getNodeColor)));
+        nodeColorPicker.setMaxWidth(Double.MAX_VALUE);
+        nodeColorPicker.setOnAction(e -> runOnEdt(() -> editorPanel.setNodeColor(toAwt(nodeColorPicker.getValue()))));
+
+        editorColorsCard.getChildren().addAll(
+                linkColorCaption,
+                linkColorPicker,
+                nodeColorCaption,
+                nodeColorPicker
+        );
+
+        Button createNodeButton = new Button("Create Node");
+        createNodeButton.getStyleClass().add("accent-button");
+        createNodeButton.setMaxWidth(Double.MAX_VALUE);
+        createNodeButton.setOnAction(e -> runOnEdt(editorPanel::armCreateNode));
+
+        Button createLinkButton = new Button("Create Link");
+        createLinkButton.getStyleClass().add("accent-button");
+        createLinkButton.setMaxWidth(Double.MAX_VALUE);
+        createLinkButton.setOnAction(e -> runOnEdt(editorPanel::armCreateLink));
+
+        Button editLinkButton = new Button("Edit Selected Link");
+        editLinkButton.getStyleClass().add("ghost-button");
+        editLinkButton.setMaxWidth(Double.MAX_VALUE);
+        editLinkButton.setDisable(true);
+        editLinkButton.setOnAction(e -> {
+            runOnEdt(() -> {
+                boolean edited = editorPanel.editSelectedLink();
+                if (!edited) {
+                    Platform.runLater(() -> {
+                        Alert alert = new Alert(Alert.AlertType.INFORMATION);
+                        alert.setHeaderText("No link selected");
+                        alert.setContentText("Select a link first, then edit it.");
+                        alert.showAndWait();
+                    });
+                }
+            });
+        });
+
+        Button deleteLinkButton = new Button("Delete Selected Link");
+        deleteLinkButton.getStyleClass().add("ghost-button");
+        deleteLinkButton.setMaxWidth(Double.MAX_VALUE);
+        deleteLinkButton.setDisable(true);
+        deleteLinkButton.setOnAction(e -> {
+            if (!getOnEdt(editorPanel::hasSelectedLink)) {
+                Alert alert = new Alert(Alert.AlertType.INFORMATION);
+                alert.setHeaderText("No link selected");
+                alert.setContentText("Select a link first, then delete it.");
+                alert.showAndWait();
+                return;
+            }
+
+            Alert confirm = new Alert(Alert.AlertType.CONFIRMATION);
+            confirm.setHeaderText("Delete selected link?");
+            confirm.setContentText("This action removes the selected link from the edited network.");
+            var result = confirm.showAndWait();
+            if (result.isPresent() && result.get() == ButtonType.OK) {
+                getOnEdt(editorPanel::deleteSelectedLink);
+            }
+        });
+
+        Button deleteNodeButton = new Button("Delete Selected Node");
+        deleteNodeButton.getStyleClass().add("ghost-button");
+        deleteNodeButton.setMaxWidth(Double.MAX_VALUE);
+        deleteNodeButton.setDisable(true);
+        deleteNodeButton.setOnAction(e -> {
+            if (!getOnEdt(editorPanel::hasSelectedNode)) {
+                Alert alert = new Alert(Alert.AlertType.INFORMATION);
+                alert.setHeaderText("No node selected");
+                alert.setContentText("Select a node first, then delete it.");
+                alert.showAndWait();
+                return;
+            }
+
+            Alert confirm = new Alert(Alert.AlertType.CONFIRMATION);
+            confirm.setHeaderText("Delete selected node?");
+            confirm.setContentText("All links connected to this node will also be removed.");
+            var result = confirm.showAndWait();
+            if (result.isPresent() && result.get() == ButtonType.OK) {
+                int removedLinks = getOnEdt(editorPanel::deleteSelectedNodeAndConnectedLinks);
+                Alert info = new Alert(Alert.AlertType.INFORMATION);
+                info.setHeaderText("Node deleted");
+                info.setContentText("Connected links removed: " + Math.max(0, removedLinks));
+                info.showAndWait();
+            }
+        });
+
+        Button saveNetworkButton = new Button("Save Modified Network");
+        saveNetworkButton.getStyleClass().add("accent-button");
+        saveNetworkButton.setMaxWidth(Double.MAX_VALUE);
+        saveNetworkButton.setOnAction(e -> {
+            FileChooser chooser = new FileChooser();
+            chooser.setTitle("Save Modified MATSim Network");
+            chooser.getExtensionFilters().addAll(
+                    new FileChooser.ExtensionFilter("MATSim network (*.xml)", "*.xml"),
+                    new FileChooser.ExtensionFilter("MATSim network compressed (*.xml.gz)", "*.xml.gz")
+            );
+            chooser.setInitialFileName("network-edited.xml.gz");
+            java.io.File selected = chooser.showSaveDialog(networkEditorStage);
+            if (selected == null) {
+                return;
+            }
+
+            try {
+                NetworkEditorPanel.SaveSummary summary = getOnEdt(() -> editorPanel.saveNetwork(selected.toPath()));
+                Alert ok = new Alert(Alert.AlertType.INFORMATION);
+                ok.setHeaderText("Network saved");
+                ok.setContentText("Saved " + summary.nodeCount() + " nodes and " + summary.linkCount()
+                        + " links to:\n" + summary.outputFile());
+                ok.showAndWait();
+            } catch (Exception ex) {
+                Alert err = new Alert(Alert.AlertType.ERROR);
+                err.setHeaderText("Save failed");
+                err.setContentText(ex.getMessage());
+                err.showAndWait();
+            }
+        });
+
+        Label mapHint = new Label();
+        mapHint.getStyleClass().add("hint");
+        mapHint.setWrapText(true);
+
+        Runnable refreshMapHint = () -> {
+            boolean enabled = getOnEdt(editorPanel::hasGeoCoordinates);
+            mapHint.setText(enabled
+                    ? "OSM map background enabled. Tiles are cached in cache/osm-tiles."
+                    : "OSM map background disabled for the selected coordinate system.");
+        };
+        crsCombo.valueProperty().addListener((obs, oldValue, newValue) -> refreshMapHint.run());
+        refreshMapHint.run();
+
+        VBox inspector = new VBox(10,
+                selectedType,
+                selectedId,
+                selectedMeta,
+                crsCaption,
+                crsCombo,
+                editorLinkModesCard,
+                editorColorsCard,
+                attributesTree,
+                createNodeButton,
+                createLinkButton,
+                editLinkButton,
+                deleteLinkButton,
+                deleteNodeButton,
+                saveNetworkButton,
+                mapHint
+        );
+        inspector.setPadding(new Insets(12));
+        inspector.setPrefWidth(360);
+        inspector.getStyleClass().add("side-content");
+
+        runOnEdt(() -> editorPanel.setSelectionListener((node, link) -> Platform.runLater(() -> {
+            if (node != null) {
+                selectedType.setText("Selected Node");
+                selectedId.setText(node.id());
+                selectedMeta.setText(String.format(Locale.ROOT, "x=%.4f, y=%.4f", node.x(), node.y()));
+                attributesTree.setRoot(buildNodeTree(node));
+                editLinkButton.setDisable(true);
+                deleteLinkButton.setDisable(true);
+                deleteNodeButton.setDisable(false);
+                return;
+            }
+
+            if (link != null) {
+                selectedType.setText("Selected Link");
+                selectedId.setText(link.id());
+                selectedMeta.setText(link.fromNodeId() + " -> " + link.toNodeId());
+                attributesTree.setRoot(buildLinkTree(link));
+                editLinkButton.setDisable(false);
+                deleteLinkButton.setDisable(false);
+                deleteNodeButton.setDisable(true);
+                return;
+            }
+
+            selectedType.setText("Nothing selected");
+            selectedId.setText("-");
+            selectedMeta.setText("Click a link or node to inspect details.");
+            attributesTree.setRoot(new TreeItem<>("No selection"));
+            editLinkButton.setDisable(true);
+            deleteLinkButton.setDisable(true);
+            deleteNodeButton.setDisable(true);
+        })));
+
+        BorderPane root = new BorderPane();
+        root.getStyleClass().add("app-root");
+        root.setCenter(swingNode);
+        root.setRight(inspector);
+
+        Scene scene = new Scene(root, 1560, 920);
+        String css = (mainScene != null && mainScene.getStylesheets().contains(LIGHT_CSS)) ? LIGHT_CSS : DARK_CSS;
+        scene.getStylesheets().add(css);
+
+        Stage stage = new Stage();
+        stage.initOwner(owner);
+        stage.setTitle("Network Editor");
+        stage.setScene(scene);
+        stage.setMinWidth(1180);
+        stage.setMinHeight(760);
+        stage.setOnHidden(event -> {
+            runOnEdt(editorPanel::disposeResources);
+            runOnEdt(() -> mainNetworkPanel.setRenderingSuspended(false));
+            networkEditorStage = null;
+        });
+
+        networkEditorStage = stage;
+        stage.show();
+    }
+
+    private static TreeItem<String> buildNodeTree(com.matsim.viz.domain.NodePoint node) {
+        TreeItem<String> root = new TreeItem<>("Node");
+        root.setExpanded(true);
+        root.getChildren().add(treeKV("id", node.id()));
+        root.getChildren().add(treeKV("x", String.format(Locale.ROOT, "%.6f", node.x())));
+        root.getChildren().add(treeKV("y", String.format(Locale.ROOT, "%.6f", node.y())));
+        return root;
+    }
+
+    private static TreeItem<String> buildLinkTree(com.matsim.viz.domain.LinkSegment link) {
+        TreeItem<String> root = new TreeItem<>("Link");
+        root.setExpanded(true);
+
+        TreeItem<String> core = new TreeItem<>("Core Fields");
+        core.setExpanded(true);
+        core.getChildren().add(treeKV("id", link.id()));
+        core.getChildren().add(treeKV("from", link.fromNodeId()));
+        core.getChildren().add(treeKV("to", link.toNodeId()));
+        core.getChildren().add(treeKV("length", String.format(Locale.ROOT, "%.3f", link.length())));
+        core.getChildren().add(treeKV("freeSpeed", String.format(Locale.ROOT, "%.6f", link.freeSpeed())));
+        core.getChildren().add(treeKV("lanes", String.format(Locale.ROOT, "%.3f", link.lanes())));
+        core.getChildren().add(treeKV("allowedModes", String.join(", ", link.allowedModes().stream().sorted().toList())));
+
+        TreeItem<String> attrs = new TreeItem<>("Link Attributes");
+        attrs.setExpanded(true);
+        link.attributes().entrySet().stream()
+                .sorted(Map.Entry.comparingByKey())
+                .forEach(entry -> attrs.getChildren().add(treeKV(entry.getKey(), entry.getValue())));
+
+        root.getChildren().add(core);
+        root.getChildren().add(attrs);
+        return root;
+    }
+
+    private static TreeItem<String> treeKV(String key, String value) {
+        TreeItem<String> node = new TreeItem<>(key);
+        node.setExpanded(false);
+        node.getChildren().add(new TreeItem<>(value == null ? "" : value));
+        return node;
     }
 
     private VBox buildDisplaySettingsCard(Stage owner, SimulationModel model, NetworkPanel networkPanel) {
@@ -679,6 +1062,57 @@ public final class FxVisualizerApp extends Application {
         }));
 
         card.getChildren().addAll(lowCaption, lowPicker, highCaption, highPicker);
+        return card;
+    }
+
+    private VBox buildPtStopBubbleSizeCard(NetworkPanel networkPanel) {
+        VBox card = createCard("PT Stop Bubble Size");
+
+        Label minCaption = new Label("Minimum radius (px)");
+        minCaption.getStyleClass().add("field-caption");
+        Slider minSlider = new Slider(1.0, 40.0, getOnEdt(networkPanel::getPtStopBubbleMinRadiusPixels));
+        Label minValue = new Label(String.format(Locale.ROOT, "%.1f px", minSlider.getValue()));
+        minValue.getStyleClass().add("mono-value");
+
+        Label maxCaption = new Label("Maximum radius (px)");
+        maxCaption.getStyleClass().add("field-caption");
+        Slider maxSlider = new Slider(2.0, 64.0, getOnEdt(networkPanel::getPtStopBubbleMaxRadiusPixels));
+        Label maxValue = new Label(String.format(Locale.ROOT, "%.1f px", maxSlider.getValue()));
+        maxValue.getStyleClass().add("mono-value");
+
+        minSlider.valueProperty().addListener((obs, oldValue, newValue) -> {
+            double min = newValue.doubleValue();
+            if (maxSlider.getValue() < min) {
+                maxSlider.setValue(min);
+            }
+            runOnEdt(() -> networkPanel.setPtStopBubbleMinRadiusPixels(min));
+            minValue.setText(String.format(Locale.ROOT, "%.1f px", min));
+            maxValue.setText(String.format(Locale.ROOT, "%.1f px", maxSlider.getValue()));
+        });
+
+        maxSlider.valueProperty().addListener((obs, oldValue, newValue) -> {
+            double max = newValue.doubleValue();
+            if (max < minSlider.getValue()) {
+                minSlider.setValue(max);
+            }
+            runOnEdt(() -> networkPanel.setPtStopBubbleMaxRadiusPixels(max));
+            maxValue.setText(String.format(Locale.ROOT, "%.1f px", max));
+            minValue.setText(String.format(Locale.ROOT, "%.1f px", minSlider.getValue()));
+        });
+
+        Label hint = new Label("Controls bubble size scaling for PT stop volumes.");
+        hint.getStyleClass().add("hint");
+        hint.setWrapText(true);
+
+        card.getChildren().addAll(
+                minCaption,
+                minSlider,
+                minValue,
+                maxCaption,
+                maxSlider,
+                maxValue,
+                hint
+        );
         return card;
     }
 
@@ -960,6 +1394,20 @@ public final class FxVisualizerApp extends Application {
     private static void setVisibleManaged(Node node, boolean visible) {
         node.setVisible(visible);
         node.setManaged(visible);
+    }
+
+    private static List<VisualizationLayerChoice> buildVisualizationChoices() {
+        List<VisualizationLayerChoice> choices = new ArrayList<>();
+        for (NetworkPanel.VisualizationMode mode : NetworkPanel.VisualizationMode.values()) {
+            choices.add(new VisualizationLayerChoice(mode.toString(), mode, false));
+        }
+        choices.add(new VisualizationLayerChoice("Network Editor", NetworkPanel.VisualizationMode.VEHICLES, true));
+        return choices;
+    }
+
+    private static VisualizationLayerChoice choiceForMode(NetworkPanel.VisualizationMode mode) {
+        NetworkPanel.VisualizationMode safeMode = mode == null ? NetworkPanel.VisualizationMode.VEHICLES : mode;
+        return new VisualizationLayerChoice(safeMode.toString(), safeMode, false);
     }
 
     private TitledPane buildModeSelectionCard(
@@ -1246,6 +1694,25 @@ public final class FxVisualizerApp extends Application {
         }
     }
 
+    private static String detectRendererMode() {
+        try {
+            Class<?> pipelineClass = Class.forName("com.sun.prism.GraphicsPipeline");
+            Method getPipeline = pipelineClass.getMethod("getPipeline");
+            Object pipeline = getPipeline.invoke(null);
+            if (pipeline == null) {
+                return "CPU";
+            }
+
+            String name = pipeline.getClass().getSimpleName().toLowerCase(Locale.ROOT);
+            if (name.contains("sw")) {
+                return "CPU";
+            }
+            return "GPU";
+        } catch (Exception ex) {
+            return "Unknown";
+        }
+    }
+
     private static List<DisplayScreenOption> buildScreenOptions() {
         List<DisplayScreenOption> options = new ArrayList<>();
         List<Screen> screens = Screen.getScreens();
@@ -1274,6 +1741,28 @@ public final class FxVisualizerApp extends Application {
             }
         }
         return options.getFirst();
+    }
+
+    private static DisplayScreenOption largestScreenOption(List<DisplayScreenOption> options) {
+        if (options == null || options.isEmpty()) {
+            return null;
+        }
+
+        DisplayScreenOption largest = options.getFirst();
+        double largestArea = area(largest.screen().getVisualBounds());
+        for (int i = 1; i < options.size(); i++) {
+            DisplayScreenOption candidate = options.get(i);
+            double area = area(candidate.screen().getVisualBounds());
+            if (area > largestArea) {
+                largest = candidate;
+                largestArea = area;
+            }
+        }
+        return largest;
+    }
+
+    private static double area(Rectangle2D bounds) {
+        return Math.max(0.0, bounds.getWidth()) * Math.max(0.0, bounds.getHeight());
     }
 
     private static void moveStageToScreen(Stage stage, Screen screen, boolean preserveSize) {
@@ -1385,6 +1874,9 @@ public final class FxVisualizerApp extends Application {
                 uiState.playPauseButton().setText(playbackController.isPlaying() ? "Pause" : "Play");
 
                 runOnEdt(() -> {
+                    if (networkPanel.isRenderingSuspended()) {
+                        return;
+                    }
                     networkPanel.repaint();
                     if (videoRecorder.isRecording()) {
                         videoRecorder.captureFrame(networkPanel);
@@ -1532,6 +2024,17 @@ public final class FxVisualizerApp extends Application {
     }
 
     private record DisplayScreenOption(String label, Screen screen) {
+        @Override
+        public String toString() {
+            return label;
+        }
+    }
+
+    private record VisualizationLayerChoice(
+            String label,
+            NetworkPanel.VisualizationMode mode,
+            boolean openNetworkEditor
+    ) {
         @Override
         public String toString() {
             return label;

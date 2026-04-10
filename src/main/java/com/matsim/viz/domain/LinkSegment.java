@@ -1,6 +1,7 @@
 package com.matsim.viz.domain;
 
 import java.util.Collections;
+import java.util.Map;
 import java.util.Set;
 
 public record LinkSegment(
@@ -14,10 +15,12 @@ public record LinkSegment(
     double length,
     double freeSpeed,
     double lanes,
-        Set<String> allowedModes
+        Set<String> allowedModes,
+        Map<String, String> attributes
 ) {
     public LinkSegment {
         allowedModes = allowedModes == null ? Set.of() : Collections.unmodifiableSet(allowedModes);
+        attributes = attributes == null ? Map.of() : Collections.unmodifiableMap(attributes);
     }
 
     public boolean allowsMode(String mode) {
@@ -25,5 +28,9 @@ public record LinkSegment(
             return true;
         }
         return allowedModes.contains(mode.toLowerCase());
+    }
+
+    public String attribute(String key) {
+        return attributes.get(key);
     }
 }

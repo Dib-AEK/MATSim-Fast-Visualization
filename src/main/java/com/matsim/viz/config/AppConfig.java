@@ -8,6 +8,7 @@ public record AppConfig(
         int playbackStartSeconds,
         int playbackEndSeconds,
         int playbackSpeed,
+        String renderBackend,
         String java2dPipeline,
         boolean java2dForceVram,
         boolean uiDarkTheme,

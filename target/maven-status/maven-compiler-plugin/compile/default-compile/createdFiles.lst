@@ -1,9 +1,7 @@
 com\matsim\viz\Main$RunOptions.class
-com\matsim\viz\parser\MatsimEventsParser.class
 com\matsim\viz\parser\MatsimEventsCollector$ActiveLinkState.class
 com\matsim\viz\domain\VehicleShape.class
 com\matsim\viz\parser\InputStreams.class
-com\matsim\viz\parser\MatsimEventsParser$1.class
 com\matsim\viz\parser\PersonsCsvParser.class
 com\matsim\viz\ui\PanelVideoRecorder.class
 com\matsim\viz\parser\MatsimScenarioLoader.class
@@ -52,13 +50,13 @@ com\matsim\viz\parser\PlansXmlPurposeTimelineParser$LegWindow.class
 com\matsim\viz\parser\MatsimNetworkConverter.class
 com\matsim\viz\parser\SimpleCsv.class
 com\matsim\viz\ui\VehicleColorProvider$1.class
-com\matsim\viz\parser\MatsimEventsParser$ActiveLinkState.class
 com\matsim\viz\ui\NetworkPanel$PreparedLinkVehicles.class
 com\matsim\viz\ui\fx\FxVisualizerApp$NodeBundle.class
 com\matsim\viz\ui\NetworkPanel$HeatmapSnapshot.class
 com\matsim\viz\domain\ColorMode.class
 com\matsim\viz\parser\EventsParseResult.class
 com\matsim\viz\domain\NodePoint.class
+com\matsim\viz\ui\fx\FxVisualizerApp$DisplayScreenOption.class
 com\matsim\viz\parser\TransitScheduleParser.class
 com\matsim\viz\ui\NetworkPanel$VisualizationMode.class
 com\matsim\viz\config\AppConfig.class

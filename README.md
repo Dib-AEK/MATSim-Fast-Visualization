@@ -92,11 +92,17 @@ mvn -q exec:java -Dexec.args="--gui-only"
 Rendering acceleration knobs in `config/app.properties`:
 
 ```properties
+# auto | gpu | cpu
+render.backend=auto
+
 # auto | d3d | opengl | none
 render.java2d.pipeline=auto
 render.java2d.force.vram=false
 ```
 
+- `render.backend=auto`: prefers GPU and falls back to CPU automatically.
+- `render.backend=gpu`: forces GPU-first pipelines with software fallback.
+- `render.backend=cpu`: forces software rendering.
 - On Windows, `auto` selects the Java2D Direct3D pipeline.
 - For some GPUs/drivers, trying `opengl` can improve pan/zoom smoothness.
 

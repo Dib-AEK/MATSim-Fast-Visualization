@@ -3,6 +3,7 @@ package com.matsim.viz.ui;
 import com.matsim.viz.domain.ColorMode;
 import com.matsim.viz.domain.LinkSegment;
 import com.matsim.viz.domain.NetworkData;
+import com.matsim.viz.domain.PtStopPoint;
 import com.matsim.viz.domain.VehicleShape;
 import com.matsim.viz.engine.PlaybackController;
 import com.matsim.viz.engine.SimulationModel;
@@ -42,6 +43,7 @@ public final class NetworkPanel extends JPanel {
         VEHICLES("Vehicle Animation"),
         FLOW_HEATMAP("Flow Heatmap"),
         PT_FLOW_HEATMAP("PT Volume Heatmap"),
+        PT_STOP_BUBBLES("PT Stop Bubbles"),
         SPEED_HEATMAP("Speed Heatmap"),
         SPEED_RATIO_HEATMAP("Speed Ratio Heatmap");
 
@@ -95,6 +97,7 @@ public final class NetworkPanel extends JPanel {
     private final Set<String> selectedLinkModes = new HashSet<>();
     private final Set<String> selectedTripModes = new HashSet<>();
     private final Set<String> selectedHeatmapTripModes = new HashSet<>();
+    private final Set<String> selectedPtStopModes = new HashSet<>();
     private final Set<String> visibleLinkIds = new HashSet<>();
     private final Map<String, LinkScreenGeometry> linkScreenGeometries = new HashMap<>();
 
@@ -134,6 +137,8 @@ public final class NetworkPanel extends JPanel {
     private Color speedHeatmapHighColor = DEFAULT_SPEED_HEATMAP_HIGH;
     private Color speedRatioHeatmapLowColor = DEFAULT_HEATMAP_LOW;
     private Color speedRatioHeatmapHighColor = new Color(0x0A5D2A);
+    private double ptStopBubbleMinRadiusPixels = 3.5;
+    private double ptStopBubbleMaxRadiusPixels = 24.0;
     private boolean useSeparateHeatmapNetworkModes;
 
     private HeatmapCacheKey cachedHeatmapKey;
@@ -143,6 +148,7 @@ public final class NetworkPanel extends JPanel {
     private double preparedHeatmapDailyMax;
     private volatile boolean heatmapPreprocessing;
     private volatile double heatmapPreprocessProgress;
+    private volatile boolean renderingSuspended;
 
     private double zoom = 1.0;
     private double panX = 20.0;
@@ -169,6 +175,7 @@ public final class NetworkPanel extends JPanel {
         selectedLinkModes.addAll(defaultTransportModes(model.availableLinkModes()));
         selectedTripModes.addAll(defaultTransportModes(model.availableTripModes()));
         selectedHeatmapTripModes.addAll(defaultTransportModes(model.availableTripModes()));
+        selectedPtStopModes.addAll(defaultTransportModes(model.availablePtStopModes()));
 
         MouseAdapter mouseAdapter = new MouseAdapter() {
             @Override
@@ -249,6 +256,20 @@ public final class NetworkPanel extends JPanel {
         repaint();
     }
 
+    public void setSelectedPtStopModes(Set<String> modes) {
+        selectedPtStopModes.clear();
+        if (modes != null) {
+            modes.forEach(mode -> selectedPtStopModes.add(normalizeMode(mode)));
+        }
+        invalidateNetworkCache();
+        invalidateHeatmapCache();
+        repaint();
+    }
+
+    public List<String> availablePtStopModes() {
+        return model.availablePtStopModes();
+    }
+
     public int getHeatmapTimeBinSeconds() {
         return heatmapTimeBinSeconds;
     }
@@ -313,6 +334,29 @@ public final class NetworkPanel extends JPanel {
         repaint();
     }
 
+    public double getPtStopBubbleMinRadiusPixels() {
+        return ptStopBubbleMinRadiusPixels;
+    }
+
+    public void setPtStopBubbleMinRadiusPixels(double value) {
+        double clamped = clampPtStopBubbleRadius(value);
+        this.ptStopBubbleMinRadiusPixels = clamped;
+        if (ptStopBubbleMaxRadiusPixels < clamped) {
+            ptStopBubbleMaxRadiusPixels = clamped;
+        }
+        repaint();
+    }
+
+    public double getPtStopBubbleMaxRadiusPixels() {
+        return ptStopBubbleMaxRadiusPixels;
+    }
+
+    public void setPtStopBubbleMaxRadiusPixels(double value) {
+        double clamped = clampPtStopBubbleRadius(value);
+        this.ptStopBubbleMaxRadiusPixels = Math.max(clamped, ptStopBubbleMinRadiusPixels);
+        repaint();
+    }
+
     public boolean isUseSeparateHeatmapNetworkModes() {
         return useSeparateHeatmapNetworkModes;
     }
@@ -368,53 +412,78 @@ public final class NetworkPanel extends JPanel {
         Map<Integer, Map<String, Double>> speedSumByBin = new HashMap<>();
         Map<Integer, Map<String, Integer>> speedCountByBin = new HashMap<>();
 
-        int traversalCount = model.traversalCount();
-        for (int i = 0; i < traversalCount; i++) {
-            if ((i & 8191) == 0) {
-                heatmapPreprocessProgress = Math.min(0.80, 0.80 * (i / (double) Math.max(1, traversalCount)));
-            }
+        if (signature.mode() == VisualizationMode.PT_STOP_BUBBLES) {
+            int interactionCount = model.ptStopInteractionCount();
+            for (int i = 0; i < interactionCount; i++) {
+                if ((i & 8191) == 0) {
+                    heatmapPreprocessProgress = Math.min(0.80, 0.80 * (i / (double) Math.max(1, interactionCount)));
+                }
 
-            String tripMode = model.traversalTripMode(i);
-            if (!shouldAggregateTripModeForSignature(tripMode, signature)) {
-                continue;
-            }
-            if (signature.mode() == VisualizationMode.PT_FLOW_HEATMAP && !isPtMode(tripMode)) {
-                continue;
-            }
+                String stopMode = model.ptStopInteractionMode(i);
+                if (!shouldAggregateTripModeForSignature(stopMode, signature)) {
+                    continue;
+                }
 
-            double enter = model.traversalEnterTime(i);
-            if (enter < firstBinStart || enter >= (lastBinStart + binSize)) {
-                continue;
-            }
+                double time = model.ptStopInteractionTime(i);
+                if (time < firstBinStart || time >= (lastBinStart + binSize)) {
+                    continue;
+                }
 
-            int binStart = (int) Math.floor(enter / binSize) * binSize;
-            String linkId = model.traversalLinkId(i);
-
-            if (signature.mode() == VisualizationMode.FLOW_HEATMAP
-                    || signature.mode() == VisualizationMode.PT_FLOW_HEATMAP) {
+                int binStart = (int) Math.floor(time / binSize) * binSize;
+                String stopId = model.ptStopInteractionStopId(i);
                 flowCountByBin
                         .computeIfAbsent(binStart, ignored -> new HashMap<>())
-                        .merge(linkId, 1.0, Double::sum);
-                continue;
+                        .merge(stopId, 1.0, Double::sum);
             }
+        } else {
+            int traversalCount = model.traversalCount();
+            for (int i = 0; i < traversalCount; i++) {
+                if ((i & 8191) == 0) {
+                    heatmapPreprocessProgress = Math.min(0.80, 0.80 * (i / (double) Math.max(1, traversalCount)));
+                }
 
-            LinkSegment link = model.networkData().getLinks().get(linkId);
-            if (link == null || link.length() <= 0.0) {
-                continue;
+                String tripMode = model.traversalTripMode(i);
+                if (!shouldAggregateTripModeForSignature(tripMode, signature)) {
+                    continue;
+                }
+                if (signature.mode() == VisualizationMode.PT_FLOW_HEATMAP && !isPtMode(tripMode)) {
+                    continue;
+                }
+
+                double enter = model.traversalEnterTime(i);
+                if (enter < firstBinStart || enter >= (lastBinStart + binSize)) {
+                    continue;
+                }
+
+                int binStart = (int) Math.floor(enter / binSize) * binSize;
+                String linkId = model.traversalLinkId(i);
+
+                if (signature.mode() == VisualizationMode.FLOW_HEATMAP
+                        || signature.mode() == VisualizationMode.PT_FLOW_HEATMAP) {
+                    flowCountByBin
+                            .computeIfAbsent(binStart, ignored -> new HashMap<>())
+                            .merge(linkId, 1.0, Double::sum);
+                    continue;
+                }
+
+                LinkSegment link = model.networkData().getLinks().get(linkId);
+                if (link == null || link.length() <= 0.0) {
+                    continue;
+                }
+
+                double duration = Math.max(0.05, model.traversalLeaveTime(i) - enter);
+                double speedMetersPerSecond = link.length() / duration;
+                double metricValue = signature.mode() == VisualizationMode.SPEED_HEATMAP
+                        ? speedMetersPerSecond * 3.6
+                        : speedMetersPerSecond / Math.max(0.1, link.freeSpeed());
+
+                speedSumByBin
+                        .computeIfAbsent(binStart, ignored -> new HashMap<>())
+                        .merge(linkId, metricValue, Double::sum);
+                speedCountByBin
+                        .computeIfAbsent(binStart, ignored -> new HashMap<>())
+                        .merge(linkId, 1, Integer::sum);
             }
-
-            double duration = Math.max(0.05, model.traversalLeaveTime(i) - enter);
-            double speedMetersPerSecond = link.length() / duration;
-            double metricValue = signature.mode() == VisualizationMode.SPEED_HEATMAP
-                    ? speedMetersPerSecond * 3.6
-                    : speedMetersPerSecond / Math.max(0.1, link.freeSpeed());
-
-            speedSumByBin
-                    .computeIfAbsent(binStart, ignored -> new HashMap<>())
-                    .merge(linkId, metricValue, Double::sum);
-            speedCountByBin
-                    .computeIfAbsent(binStart, ignored -> new HashMap<>())
-                    .merge(linkId, 1, Integer::sum);
         }
 
         Map<HeatmapCacheKey, HeatmapSnapshot> computed = new HashMap<>();
@@ -423,7 +492,8 @@ public final class NetworkPanel extends JPanel {
             Map<String, Double> values = new HashMap<>();
 
             if (signature.mode() == VisualizationMode.FLOW_HEATMAP
-                    || signature.mode() == VisualizationMode.PT_FLOW_HEATMAP) {
+                    || signature.mode() == VisualizationMode.PT_FLOW_HEATMAP
+                    || signature.mode() == VisualizationMode.PT_STOP_BUBBLES) {
                 Map<String, Double> counts = flowCountByBin.get(binStart);
                 if (counts != null) {
                     double factor = 3600.0 / binSize;
@@ -749,6 +819,18 @@ public final class NetworkPanel extends JPanel {
         repaint();
     }
 
+    public void setRenderingSuspended(boolean renderingSuspended) {
+        this.renderingSuspended = renderingSuspended;
+        if (!renderingSuspended) {
+            invalidateNetworkCache();
+        }
+        repaint();
+    }
+
+    public boolean isRenderingSuspended() {
+        return renderingSuspended;
+    }
+
     public double getMinVehicleWidthPixels() {
         return minVehicleWidthPixels;
     }
@@ -785,6 +867,11 @@ public final class NetworkPanel extends JPanel {
     }
 
     private void renderScene(Graphics2D g2, boolean drawOverlays, boolean drawQueueText) {
+        if (renderingSuspended) {
+            g2.setColor(mapBackground);
+            g2.fillRect(0, 0, getWidth(), getHeight());
+            return;
+        }
 
         renderNetworkLayerIfNeeded();
         boolean vehicleMode = visualizationMode == VisualizationMode.VEHICLES;
@@ -1121,7 +1208,16 @@ public final class NetworkPanel extends JPanel {
     }
 
     private void drawHeatmap(Graphics2D g2) {
-        if (visualizationMode == VisualizationMode.VEHICLES || linkScreenGeometries.isEmpty()) {
+        if (visualizationMode == VisualizationMode.VEHICLES) {
+            return;
+        }
+
+        if (visualizationMode == VisualizationMode.PT_STOP_BUBBLES) {
+            drawPtStopBubbles(g2);
+            return;
+        }
+
+        if (linkScreenGeometries.isEmpty()) {
             return;
         }
 
@@ -1156,6 +1252,63 @@ public final class NetworkPanel extends JPanel {
                     (int) Math.round(geometry.fromY()),
                     (int) Math.round(geometry.fromX() + geometry.dx()),
                     (int) Math.round(geometry.fromY() + geometry.dy())
+            );
+        }
+    }
+
+    private void drawPtStopBubbles(Graphics2D g2) {
+        HeatmapInterpolation interpolation = resolveHeatmapInterpolation();
+        if (!interpolation.prepared()) {
+            drawPreprocessRequiredOverlay(g2);
+            return;
+        }
+
+        double maxValue = interpolation.maxValueForScale();
+        double safeMaxValue = maxValue <= 0.0 ? 1.0 : maxValue;
+
+        Color lowColor = heatmapLowColor();
+        Color highColor = heatmapHighColor();
+        double minRadius = Math.min(ptStopBubbleMinRadiusPixels, ptStopBubbleMaxRadiusPixels);
+        double maxRadius = Math.max(ptStopBubbleMinRadiusPixels, ptStopBubbleMaxRadiusPixels);
+
+        for (PtStopPoint stop : model.ptStopsById().values()) {
+            double valueA = interpolation.currentBinSnapshot().values().getOrDefault(stop.id(), 0.0);
+            double valueB = interpolation.nextBinSnapshot().values().getOrDefault(stop.id(), valueA);
+            double value = valueA + (valueB - valueA) * interpolation.alpha();
+
+            Point2D.Double screen = worldToScreen(stop.x(), stop.y());
+            if (screen.x < -48 || screen.y < -48 || screen.x > getWidth() + 48 || screen.y > getHeight() + 48) {
+                continue;
+            }
+
+            double normalized = heatmapLogNormalized(Math.max(0.0, value), safeMaxValue);
+            double eased = smoothstep(normalized);
+            double radius = minRadius + (maxRadius - minRadius) * eased;
+            Color color = interpolateColor(lowColor, highColor, eased);
+            int fillAlpha = (int) Math.round(50 + 135 * eased);
+            int strokeAlpha = (int) Math.round(95 + 125 * eased);
+            Color fill = new Color(color.getRed(), color.getGreen(), color.getBlue(), fillAlpha);
+            Color stroke = new Color(
+                    Math.max(0, color.getRed() - 20),
+                    Math.max(0, color.getGreen() - 20),
+                    Math.max(0, color.getBlue() - 20),
+                    strokeAlpha
+            );
+
+            g2.setColor(fill);
+            g2.fillOval(
+                    (int) Math.round(screen.x - radius),
+                    (int) Math.round(screen.y - radius),
+                    (int) Math.round(radius * 2.0),
+                    (int) Math.round(radius * 2.0)
+            );
+            g2.setColor(stroke);
+            g2.setStroke(new BasicStroke(1.2f));
+            g2.drawOval(
+                    (int) Math.round(screen.x - radius),
+                    (int) Math.round(screen.y - radius),
+                    (int) Math.round(radius * 2.0),
+                    (int) Math.round(radius * 2.0)
             );
         }
     }
@@ -1217,12 +1370,15 @@ public final class NetworkPanel extends JPanel {
         if (visualizationMode == VisualizationMode.VEHICLES) {
             return null;
         }
-        String selectedModesKey = String.join("|", selectedHeatmapTripModes.stream().sorted().toList());
+        Set<String> selectedModes = visualizationMode == VisualizationMode.PT_STOP_BUBBLES
+            ? Set.copyOf(selectedPtStopModes)
+            : Set.copyOf(selectedHeatmapTripModes);
+        String selectedModesKey = String.join("|", selectedModes.stream().sorted().toList());
         return new HeatmapPreparedSignature(
                 visualizationMode,
                 Math.max(30, heatmapTimeBinSeconds),
                 selectedModesKey,
-                Set.copyOf(selectedHeatmapTripModes)
+            selectedModes
         );
     }
 
@@ -1246,45 +1402,61 @@ public final class NetworkPanel extends JPanel {
 
         int binSizeSeconds = Math.max(1, binEndSeconds - binStartSeconds);
         boolean flowMode = visualizationMode == VisualizationMode.FLOW_HEATMAP
-                || visualizationMode == VisualizationMode.PT_FLOW_HEATMAP;
+                || visualizationMode == VisualizationMode.PT_FLOW_HEATMAP
+                || visualizationMode == VisualizationMode.PT_STOP_BUBBLES;
         boolean speedMode = visualizationMode == VisualizationMode.SPEED_HEATMAP;
         boolean speedRatioMode = visualizationMode == VisualizationMode.SPEED_RATIO_HEATMAP;
 
-        int traversalCount = model.traversalCount();
-        for (int i = 0; i < traversalCount; i++) {
-            String tripMode = model.traversalTripMode(i);
-            if (!shouldAggregateTripMode(tripMode)) {
-                continue;
+        if (visualizationMode == VisualizationMode.PT_STOP_BUBBLES) {
+            int interactionCount = model.ptStopInteractionCount();
+            for (int i = 0; i < interactionCount; i++) {
+                String mode = model.ptStopInteractionMode(i);
+                if (!shouldAggregateTripMode(mode)) {
+                    continue;
+                }
+                double time = model.ptStopInteractionTime(i);
+                if (time < binStartSeconds || time >= binEndSeconds) {
+                    continue;
+                }
+                values.merge(model.ptStopInteractionStopId(i), 1.0, Double::sum);
             }
-            if (visualizationMode == VisualizationMode.PT_FLOW_HEATMAP && !isPtMode(tripMode)) {
-                continue;
-            }
+        } else {
+            int traversalCount = model.traversalCount();
+            for (int i = 0; i < traversalCount; i++) {
+                String tripMode = model.traversalTripMode(i);
+                if (!shouldAggregateTripMode(tripMode)) {
+                    continue;
+                }
+                if (visualizationMode == VisualizationMode.PT_FLOW_HEATMAP && !isPtMode(tripMode)) {
+                    continue;
+                }
 
-            double enter = model.traversalEnterTime(i);
-            if (enter < binStartSeconds || enter >= binEndSeconds) {
-                continue;
-            }
+                double enter = model.traversalEnterTime(i);
+                if (enter < binStartSeconds || enter >= binEndSeconds) {
+                    continue;
+                }
 
-            String linkId = model.traversalLinkId(i);
-            if (flowMode) {
-                values.merge(linkId, 1.0, Double::sum);
-                continue;
-            }
+                String linkId = model.traversalLinkId(i);
+                if (flowMode) {
+                    values.merge(linkId, 1.0, Double::sum);
+                    continue;
+                }
 
-            LinkSegment link = model.networkData().getLinks().get(linkId);
-            if (link == null || link.length() <= 0.0) {
-                continue;
-            }
+                LinkSegment link = model.networkData().getLinks().get(linkId);
+                if (link == null || link.length() <= 0.0) {
+                    continue;
+                }
 
-            double duration = Math.max(0.05, model.traversalLeaveTime(i) - enter);
-            double speedMetersPerSecond = link.length() / duration;
-            if (speedMode) {
-                speedSums.merge(linkId, speedMetersPerSecond * 3.6, Double::sum);
-            } else if (speedRatioMode) {
-                double freeSpeed = Math.max(0.1, link.freeSpeed());
-                speedSums.merge(linkId, speedMetersPerSecond / freeSpeed, Double::sum);
+                double duration = Math.max(0.05, model.traversalLeaveTime(i) - enter);
+                double speedMetersPerSecond = link.length() / duration;
+                if (speedMode) {
+                    speedSums.merge(linkId, speedMetersPerSecond * 3.6, Double::sum);
+                } else if (speedRatioMode) {
+                    double freeSpeed = Math.max(0.1, link.freeSpeed());
+                    speedSums.merge(linkId, speedMetersPerSecond / freeSpeed, Double::sum);
+                }
+                speedCounts.merge(linkId, 1, Integer::sum);
             }
-            speedCounts.merge(linkId, 1, Integer::sum);
         }
 
         if (flowMode) {
@@ -1318,19 +1490,29 @@ public final class NetworkPanel extends JPanel {
     }
 
     private boolean shouldAggregateTripMode(String tripMode) {
-        if (model.availableTripModes().isEmpty()) {
+        List<String> availableModes = visualizationMode == VisualizationMode.PT_STOP_BUBBLES
+                ? model.availablePtStopModes()
+                : model.availableTripModes();
+        Set<String> selectedModes = visualizationMode == VisualizationMode.PT_STOP_BUBBLES
+                ? selectedPtStopModes
+                : selectedHeatmapTripModes;
+
+        if (availableModes.isEmpty()) {
             return true;
         }
-        if (selectedHeatmapTripModes.isEmpty()) {
+        if (selectedModes.isEmpty()) {
             return false;
         }
         if (tripMode == null || tripMode.isBlank()) {
             return false;
         }
-        return selectedHeatmapTripModes.contains(normalizeMode(tripMode));
+        return selectedModes.contains(normalizeMode(tripMode));
     }
 
     private Set<String> effectiveHeatmapNetworkModes() {
+        if (visualizationMode == VisualizationMode.PT_STOP_BUBBLES) {
+            return selectedPtStopModes;
+        }
         if (visualizationMode == VisualizationMode.PT_FLOW_HEATMAP) {
             Set<String> ptModes = new HashSet<>();
             for (String mode : selectedHeatmapTripModes) {
@@ -1345,7 +1527,7 @@ public final class NetworkPanel extends JPanel {
 
     private Color heatmapLowColor() {
         return switch (visualizationMode) {
-            case FLOW_HEATMAP, PT_FLOW_HEATMAP -> flowHeatmapLowColor;
+            case FLOW_HEATMAP, PT_FLOW_HEATMAP, PT_STOP_BUBBLES -> flowHeatmapLowColor;
             case SPEED_HEATMAP -> speedHeatmapLowColor;
             case SPEED_RATIO_HEATMAP -> speedRatioHeatmapLowColor;
             case VEHICLES -> DEFAULT_HEATMAP_LOW;
@@ -1354,7 +1536,7 @@ public final class NetworkPanel extends JPanel {
 
     private Color heatmapHighColor() {
         return switch (visualizationMode) {
-            case FLOW_HEATMAP, PT_FLOW_HEATMAP -> flowHeatmapHighColor;
+            case FLOW_HEATMAP, PT_FLOW_HEATMAP, PT_STOP_BUBBLES -> flowHeatmapHighColor;
             case SPEED_HEATMAP -> speedHeatmapHighColor;
             case SPEED_RATIO_HEATMAP -> speedRatioHeatmapHighColor;
             case VEHICLES -> DEFAULT_FLOW_HEATMAP_HIGH;
@@ -1366,6 +1548,11 @@ public final class NetworkPanel extends JPanel {
             return 0.0;
         }
         return Math.log1p(value) / Math.log1p(maxValue);
+    }
+
+    private static double smoothstep(double value) {
+        double t = Math.max(0.0, Math.min(1.0, value));
+        return t * t * (3.0 - 2.0 * t);
     }
 
     private static Color interpolateColor(Color low, Color high, double t) {
@@ -1812,7 +1999,7 @@ public final class NetworkPanel extends JPanel {
 
         for (int i = 0; i < maxEntries; i++) {
             LegendEntry entry = entries.get(i);
-            int rowY = y + 30 + i * rowHeight;
+            int rowY = y + 34 + i * rowHeight;
             g2.setColor(entry.color());
             g2.fillRect(x + 10, rowY - 11, 12, 12);
             g2.setColor(darkTheme ? new Color(0xEFEFEF) : new Color(0x202020));
@@ -1847,7 +2034,7 @@ public final class NetworkPanel extends JPanel {
         g2.drawString("Log scale", x + width - 68, y + 18);
 
         int barX = x + 12;
-        int barY = y + 32;
+        int barY = y + 36;
         int barWidth = width - 24;
         int barHeight = 16;
         Color low = heatmapLowColor();
@@ -1872,6 +2059,7 @@ public final class NetworkPanel extends JPanel {
         return switch (visualizationMode) {
             case FLOW_HEATMAP -> "Flow (veh/h)";
             case PT_FLOW_HEATMAP -> "PT Volume (veh/h)";
+            case PT_STOP_BUBBLES -> "PT Stop Volume (pax/h)";
             case SPEED_HEATMAP -> "Speed (km/h)";
             case SPEED_RATIO_HEATMAP -> "Speed Ratio (v/freeSpeed)";
             case VEHICLES -> "Legend";
@@ -1929,7 +2117,8 @@ public final class NetworkPanel extends JPanel {
 
     private String formatHeatmapLegendValue(double value) {
         if (visualizationMode == VisualizationMode.FLOW_HEATMAP
-                || visualizationMode == VisualizationMode.PT_FLOW_HEATMAP) {
+                || visualizationMode == VisualizationMode.PT_FLOW_HEATMAP
+                || visualizationMode == VisualizationMode.PT_STOP_BUBBLES) {
             return String.format(Locale.ROOT, "%.1f", value);
         }
         if (visualizationMode == VisualizationMode.SPEED_RATIO_HEATMAP) {
@@ -1990,6 +2179,10 @@ public final class NetworkPanel extends JPanel {
 
     private static double clampVehiclePixelSize(double value) {
         return Math.max(0.5, Math.min(30.0, value));
+    }
+
+    private static double clampPtStopBubbleRadius(double value) {
+        return Math.max(1.0, Math.min(64.0, value));
     }
 
     private static String normalizeMode(String mode) {

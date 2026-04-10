@@ -1,6 +1,8 @@
 package com.matsim.viz.engine;
 
 import com.matsim.viz.domain.NetworkData;
+import com.matsim.viz.domain.PtStopInteraction;
+import com.matsim.viz.domain.PtStopPoint;
 import com.matsim.viz.domain.TripPurposeWindow;
 import com.matsim.viz.domain.VehicleMetadata;
 import com.matsim.viz.domain.VehicleTraversal;
@@ -19,6 +21,7 @@ public final class SimulationModel {
     private final Map<String, String> vehicleToMode;
     private final Map<String, VehicleMetadata> metadataByPerson;
     private final Map<String, List<TripPurposeWindow>> tripPurposeWindowsByPerson;
+    private final Map<String, PtStopPoint> ptStopsById;
 
     private final String[] traversalVehicleIds;
     private final String[] traversalTripModes;
@@ -32,8 +35,14 @@ public final class SimulationModel {
     private final String[] transitionLinkIds;
     private final boolean[] transitionEnters;
 
+    private final String[] ptStopInteractionStopIds;
+    private final String[] ptStopInteractionModes;
+    private final double[] ptStopInteractionTimes;
+    private final boolean[] ptStopInteractionBoardings;
+
     private final List<String> availableLinkModes;
     private final List<String> availableTripModes;
+    private final List<String> availablePtStopModes;
     private final List<String> availableTripPurposes;
     private final List<String> availableSexCategories;
 
@@ -46,13 +55,18 @@ public final class SimulationModel {
             Map<String, String> vehicleToPerson,
             Map<String, String> vehicleToMode,
             Map<String, VehicleMetadata> metadataByPerson,
-            Map<String, List<TripPurposeWindow>> tripPurposeWindowsByPerson
+            Map<String, List<TripPurposeWindow>> tripPurposeWindowsByPerson,
+            Map<String, PtStopPoint> ptStopsById,
+            PtStopInteraction[] ptStopInteractions
     ) {
         this.networkData = networkData;
         this.vehicleToPerson = Collections.unmodifiableMap(vehicleToPerson);
         this.vehicleToMode = Collections.unmodifiableMap(vehicleToMode);
         this.metadataByPerson = Collections.unmodifiableMap(metadataByPerson);
         this.tripPurposeWindowsByPerson = Collections.unmodifiableMap(copyTripPurposeWindows(tripPurposeWindowsByPerson));
+        this.ptStopsById = ptStopsById == null
+                ? Map.of()
+                : Collections.unmodifiableMap(new java.util.HashMap<>(ptStopsById));
 
         int count = traversals == null ? 0 : traversals.length;
         this.traversalVehicleIds = new String[count];
@@ -79,8 +93,22 @@ public final class SimulationModel {
         this.transitionLinkIds = transitionArrays.linkIds();
         this.transitionEnters = transitionArrays.enters();
 
+        int stopInteractionCount = ptStopInteractions == null ? 0 : ptStopInteractions.length;
+        this.ptStopInteractionStopIds = new String[stopInteractionCount];
+        this.ptStopInteractionModes = new String[stopInteractionCount];
+        this.ptStopInteractionTimes = new double[stopInteractionCount];
+        this.ptStopInteractionBoardings = new boolean[stopInteractionCount];
+        for (int i = 0; i < stopInteractionCount; i++) {
+            PtStopInteraction interaction = ptStopInteractions[i];
+            this.ptStopInteractionStopIds[i] = interaction.stopId();
+            this.ptStopInteractionModes[i] = normalizeMode(interaction.mode());
+            this.ptStopInteractionTimes[i] = interaction.timeSeconds();
+            this.ptStopInteractionBoardings[i] = interaction.boarding();
+        }
+
         this.availableLinkModes = Collections.unmodifiableList(extractLinkModes(networkData));
         this.availableTripModes = Collections.unmodifiableList(extractTripModes(vehicleToMode));
+        this.availablePtStopModes = Collections.unmodifiableList(extractPtStopModes(this.ptStopInteractionModes, this.ptStopsById));
         this.availableTripPurposes = Collections.unmodifiableList(
             extractTripPurposes(metadataByPerson, this.tripPurposeWindowsByPerson)
         );
@@ -109,6 +137,10 @@ public final class SimulationModel {
 
     public Map<String, VehicleMetadata> metadataByPerson() {
         return metadataByPerson;
+    }
+
+    public Map<String, PtStopPoint> ptStopsById() {
+        return ptStopsById;
     }
 
     public String tripPurposeForTraversal(int traversalIndex) {
@@ -200,12 +232,36 @@ public final class SimulationModel {
         return availableTripModes;
     }
 
+    public List<String> availablePtStopModes() {
+        return availablePtStopModes;
+    }
+
     public List<String> availableTripPurposes() {
         return availableTripPurposes;
     }
 
     public List<String> availableSexCategories() {
         return availableSexCategories;
+    }
+
+    public int ptStopInteractionCount() {
+        return ptStopInteractionTimes.length;
+    }
+
+    public String ptStopInteractionStopId(int index) {
+        return ptStopInteractionStopIds[index];
+    }
+
+    public String ptStopInteractionMode(int index) {
+        return ptStopInteractionModes[index];
+    }
+
+    public double ptStopInteractionTime(int index) {
+        return ptStopInteractionTimes[index];
+    }
+
+    public boolean ptStopInteractionBoarding(int index) {
+        return ptStopInteractionBoardings[index];
     }
 
     private TransitionArrays buildTransitionArrays() {
@@ -329,6 +385,31 @@ public final class SimulationModel {
                 modes.add(mode.toLowerCase(Locale.ROOT));
             }
         });
+        List<String> sorted = new ArrayList<>(modes);
+        Collections.sort(sorted);
+        return sorted;
+    }
+
+    private static List<String> extractPtStopModes(String[] interactionModes, Map<String, PtStopPoint> stopsById) {
+        Set<String> modes = new LinkedHashSet<>();
+        if (interactionModes != null) {
+            for (String mode : interactionModes) {
+                if (mode != null && !mode.isBlank()) {
+                    modes.add(mode.toLowerCase(Locale.ROOT));
+                }
+            }
+        }
+
+        if (stopsById != null) {
+            for (PtStopPoint stop : stopsById.values()) {
+                for (String mode : stop.modes()) {
+                    if (mode != null && !mode.isBlank()) {
+                        modes.add(mode.toLowerCase(Locale.ROOT));
+                    }
+                }
+            }
+        }
+
         List<String> sorted = new ArrayList<>(modes);
         Collections.sort(sorted);
         return sorted;

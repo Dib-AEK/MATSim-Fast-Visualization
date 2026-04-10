@@ -42,9 +42,17 @@ public final class MatsimNetworkConverter {
             String linkId = link.getId().toString();
             String fromNodeId = link.getFromNode().getId().toString();
             String toNodeId = link.getToNode().getId().toString();
-                Set<String> allowedModes = link.getAllowedModes().stream()
+            Set<String> allowedModes = link.getAllowedModes().stream()
                     .map(mode -> mode.toLowerCase(Locale.ROOT))
                     .collect(Collectors.toSet());
+            Map<String, String> attributes = new HashMap<>();
+            attributes.put("capacity", Double.toString(link.getCapacity()));
+            link.getAttributes().getAsMap().forEach((key, value) -> {
+                if (key != null && value != null) {
+                    attributes.put(key, String.valueOf(value));
+                }
+            });
+
             links.put(linkId, new LinkSegment(
                     linkId,
                     fromNodeId,
@@ -56,7 +64,8 @@ public final class MatsimNetworkConverter {
                     link.getLength(),
                     link.getFreespeed(),
                     link.getNumberOfLanes(),
-                    allowedModes
+                    allowedModes,
+                    attributes
             ));
         }
 

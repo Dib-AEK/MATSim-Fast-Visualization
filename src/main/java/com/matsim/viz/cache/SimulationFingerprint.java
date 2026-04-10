@@ -1,8 +1,13 @@
 package com.matsim.viz.cache;
 
+import com.matsim.viz.parser.MatsimEventsCollector;
+import com.matsim.viz.parser.MatsimEventsProcessor;
+import com.matsim.viz.parser.MatsimNetworkConverter;
+import com.matsim.viz.parser.TransitScheduleParser;
 import com.matsim.viz.parser.ResolvedSimulationInputs;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -14,7 +19,15 @@ import java.util.HexFormat;
 import java.util.List;
 
 public final class SimulationFingerprint {
-    private static final String CACHE_SCHEMA = "mviz-cache-v5";
+    private static final String CACHE_SCHEMA = "mviz-cache-v7";
+
+    private static final List<Class<?>> PROCESSOR_CLASSES = List.of(
+            SimulationCacheStore.class,
+            MatsimNetworkConverter.class,
+            MatsimEventsProcessor.class,
+            MatsimEventsCollector.class,
+            TransitScheduleParser.class
+    );
 
     private SimulationFingerprint() {
     }
@@ -54,10 +67,30 @@ public final class SimulationFingerprint {
                 }
             }
 
+            updateProcessorCodeFingerprint(digest);
+
             String full = HexFormat.of().formatHex(digest.digest());
             return full.substring(0, 24);
         } catch (NoSuchAlgorithmException | IOException e) {
             throw new IllegalStateException("Failed to compute simulation cache fingerprint", e);
+        }
+    }
+
+    private static void updateProcessorCodeFingerprint(MessageDigest digest) throws IOException {
+        for (Class<?> clazz : PROCESSOR_CLASSES) {
+            update(digest, clazz.getName());
+            String resource = "/" + clazz.getName().replace('.', '/') + ".class";
+            try (InputStream in = clazz.getResourceAsStream(resource)) {
+                if (in == null) {
+                    update(digest, "missing-bytecode");
+                    continue;
+                }
+
+                byte[] bytes = in.readAllBytes();
+                update(digest, Integer.toString(bytes.length));
+                digest.update(bytes);
+                digest.update((byte) 0);
+            }
         }
     }
 

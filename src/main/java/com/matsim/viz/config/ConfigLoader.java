@@ -26,6 +26,7 @@ public final class ConfigLoader {
                 parseInt(properties, "playback.start.seconds", 0),
                 parseInt(properties, "playback.end.seconds", 86_400),
                 parseInt(properties, "playback.speed", 60),
+                properties.getProperty("render.backend", "auto").trim(),
                 properties.getProperty("render.java2d.pipeline", "auto").trim(),
                 parseBoolean(properties, "render.java2d.force.vram", false),
                 parseBoolean(properties, "ui.theme.dark", true),

@@ -3,6 +3,8 @@ package com.matsim.viz.cache;
 import com.matsim.viz.domain.LinkSegment;
 import com.matsim.viz.domain.NetworkData;
 import com.matsim.viz.domain.NodePoint;
+import com.matsim.viz.domain.PtStopInteraction;
+import com.matsim.viz.domain.PtStopPoint;
 import com.matsim.viz.domain.VehicleMetadata;
 import com.matsim.viz.domain.VehicleTraversal;
 
@@ -23,7 +25,7 @@ import java.util.zip.GZIPOutputStream;
 
 public final class SimulationCacheStore {
     private static final int MAGIC = 0x4D565A31; // MVZ1
-    private static final int VERSION = 5;
+    private static final int VERSION = 7;
 
     private final Path cacheDir;
 
@@ -53,8 +55,18 @@ public final class SimulationCacheStore {
             Map<String, String> vehicleToPerson = readStringMap(in);
             Map<String, String> vehicleToMode = readStringMap(in);
             Map<String, VehicleMetadata> metadataByPerson = readMetadataMap(in);
+                Map<String, PtStopPoint> ptStopsById = readPtStopsMap(in);
+                PtStopInteraction[] ptStopInteractions = readPtStopInteractions(in);
 
-            return new CachedSimulationData(network, traversals, vehicleToPerson, vehicleToMode, metadataByPerson);
+                return new CachedSimulationData(
+                    network,
+                    traversals,
+                    vehicleToPerson,
+                    vehicleToMode,
+                    metadataByPerson,
+                    ptStopsById,
+                    ptStopInteractions
+                );
         }
     }
 
@@ -71,6 +83,8 @@ public final class SimulationCacheStore {
             writeStringMap(out, data.vehicleToPerson());
             writeStringMap(out, data.vehicleToMode());
             writeMetadataMap(out, data.metadataByPerson());
+            writePtStopsMap(out, data.ptStopsById());
+            writePtStopInteractions(out, data.ptStopInteractions());
         }
     }
 
@@ -107,6 +121,7 @@ public final class SimulationCacheStore {
             for (String mode : link.allowedModes()) {
                 writeString(out, mode);
             }
+            writeStringMap(out, link.attributes());
         }
     }
 
@@ -143,6 +158,7 @@ public final class SimulationCacheStore {
             for (int j = 0; j < modeCount; j++) {
                 modes.add(readString(in));
             }
+            Map<String, String> attributes = readStringMap(in);
 
             links.put(id, new LinkSegment(
                     id,
@@ -155,7 +171,8 @@ public final class SimulationCacheStore {
                     length,
                     freeSpeed,
                     lanes,
-                    modes
+                    modes,
+                    attributes
             ));
         }
 
@@ -268,5 +285,60 @@ public final class SimulationCacheStore {
 
     private static Integer readNullableInteger(DataInputStream in) throws IOException {
         return in.readBoolean() ? in.readInt() : null;
+    }
+
+    private static void writePtStopsMap(DataOutputStream out, Map<String, PtStopPoint> map) throws IOException {
+        Map<String, PtStopPoint> safeMap = map == null ? Map.of() : map;
+        out.writeInt(safeMap.size());
+        for (PtStopPoint stop : safeMap.values()) {
+            writeString(out, stop.id());
+            out.writeDouble(stop.x());
+            out.writeDouble(stop.y());
+            out.writeInt(stop.modes().size());
+            for (String mode : stop.modes()) {
+                writeString(out, mode);
+            }
+        }
+    }
+
+    private static Map<String, PtStopPoint> readPtStopsMap(DataInputStream in) throws IOException {
+        int size = in.readInt();
+        Map<String, PtStopPoint> map = new HashMap<>(Math.max(16, size));
+        for (int i = 0; i < size; i++) {
+            String id = readString(in);
+            double x = in.readDouble();
+            double y = in.readDouble();
+            int modeCount = in.readInt();
+            Set<String> modes = new HashSet<>(Math.max(4, modeCount));
+            for (int m = 0; m < modeCount; m++) {
+                modes.add(readString(in));
+            }
+            map.put(id, new PtStopPoint(id, x, y, modes));
+        }
+        return map;
+    }
+
+    private static void writePtStopInteractions(DataOutputStream out, PtStopInteraction[] interactions) throws IOException {
+        PtStopInteraction[] safe = interactions == null ? new PtStopInteraction[0] : interactions;
+        out.writeInt(safe.length);
+        for (PtStopInteraction interaction : safe) {
+            writeString(out, interaction.stopId());
+            writeString(out, interaction.mode());
+            out.writeDouble(interaction.timeSeconds());
+            out.writeBoolean(interaction.boarding());
+        }
+    }
+
+    private static PtStopInteraction[] readPtStopInteractions(DataInputStream in) throws IOException {
+        int size = in.readInt();
+        PtStopInteraction[] interactions = new PtStopInteraction[size];
+        for (int i = 0; i < size; i++) {
+            String stopId = readString(in);
+            String mode = readString(in);
+            double time = in.readDouble();
+            boolean boarding = in.readBoolean();
+            interactions[i] = new PtStopInteraction(stopId, mode, time, boarding);
+        }
+        return interactions;
     }
 }
