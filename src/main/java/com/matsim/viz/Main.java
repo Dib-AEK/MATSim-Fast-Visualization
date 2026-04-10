@@ -51,6 +51,8 @@ public final class Main {
 
         System.out.println("Using config: " + configPath);
         System.out.println("MATSim config: " + config.matsimConfigFile());
+        System.out.println("Network     : " + inputs.networkFile());
+        System.out.println("Population  : " + inputs.populationFile());
         System.out.println("Events      : " + inputs.eventsFile());
         System.out.println("Trips       : " + (inputs.tripsFile() == null ? "(not found)" : inputs.tripsFile()));
         System.out.println("Persons     : " + (inputs.outputPersonsFile() == null ? "(not found)" : inputs.outputPersonsFile()));

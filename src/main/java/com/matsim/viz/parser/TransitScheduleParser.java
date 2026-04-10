@@ -1,11 +1,14 @@
 package com.matsim.viz.parser;
 
-import javax.xml.parsers.SAXParser;
-import javax.xml.parsers.SAXParserFactory;
-import org.xml.sax.Attributes;
-import org.xml.sax.helpers.DefaultHandler;
+import org.matsim.api.core.v01.Scenario;
+import org.matsim.core.config.Config;
+import org.matsim.core.config.ConfigUtils;
+import org.matsim.core.scenario.ScenarioUtils;
+import org.matsim.pt.transitSchedule.api.Departure;
+import org.matsim.pt.transitSchedule.api.TransitLine;
+import org.matsim.pt.transitSchedule.api.TransitRoute;
+import org.matsim.pt.transitSchedule.api.TransitScheduleReader;
 
-import java.io.InputStream;
 import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Locale;
@@ -23,51 +26,28 @@ public final class TransitScheduleParser {
     public static Map<String, String> parseVehicleModes(Path transitScheduleFile) {
         Map<String, String> vehicleToMode = new HashMap<>();
 
-        try (InputStream is = InputStreams.openMaybeGzip(transitScheduleFile)) {
-            SAXParserFactory factory = SAXParserFactory.newInstance();
-            factory.setFeature("http://apache.org/xml/features/nonvalidating/load-external-dtd", false);
-            factory.setFeature("http://xml.org/sax/features/external-general-entities", false);
-            factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
-            SAXParser parser = factory.newSAXParser();
+        try {
+            Config config = ConfigUtils.createConfig();
+            config.transit().setUseTransit(true);
+            Scenario scenario = ScenarioUtils.createScenario(config);
 
-            parser.parse(is, new DefaultHandler() {
-                private String currentMode;
-                private boolean inTransportMode;
-                private final StringBuilder textBuffer = new StringBuilder();
+            new TransitScheduleReader(scenario).readFile(transitScheduleFile.toString());
 
-                @Override
-                public void startElement(String uri, String localName, String qName, Attributes attributes) {
-                    if ("transitRoute".equals(qName)) {
-                        currentMode = null;
-                    } else if ("transportMode".equals(qName)) {
-                        inTransportMode = true;
-                        textBuffer.setLength(0);
-                    } else if ("departure".equals(qName)) {
-                        String vehicleRefId = attributes.getValue("vehicleRefId");
-                        if (vehicleRefId != null && !vehicleRefId.isBlank() && currentMode != null) {
-                            vehicleToMode.put(vehicleRefId, currentMode.toLowerCase(Locale.ROOT));
+            for (TransitLine line : scenario.getTransitSchedule().getTransitLines().values()) {
+                for (TransitRoute route : line.getRoutes().values()) {
+                    String mode = route.getTransportMode();
+                    if (mode == null || mode.isBlank()) {
+                        continue;
+                    }
+                    String normalizedMode = mode.toLowerCase(Locale.ROOT);
+
+                    for (Departure departure : route.getDepartures().values()) {
+                        if (departure.getVehicleId() != null) {
+                            vehicleToMode.put(departure.getVehicleId().toString(), normalizedMode);
                         }
                     }
                 }
-
-                @Override
-                public void characters(char[] ch, int start, int length) {
-                    if (inTransportMode) {
-                        textBuffer.append(ch, start, length);
-                    }
-                }
-
-                @Override
-                public void endElement(String uri, String localName, String qName) {
-                    if ("transportMode".equals(qName)) {
-                        inTransportMode = false;
-                        String mode = textBuffer.toString().trim();
-                        if (!mode.isEmpty()) {
-                            currentMode = mode;
-                        }
-                    }
-                }
-            });
+            }
         } catch (Exception ex) {
             throw new IllegalStateException("Failed to parse transit schedule: " + transitScheduleFile, ex);
         }

@@ -52,6 +52,14 @@ public final class ConfigLoader {
                 properties.getProperty("ui.vehicle.shape.truck", "RECTANGLE").trim(),
                 properties.getProperty("ui.vehicle.shape.bus", "OVAL").trim(),
                 properties.getProperty("ui.vehicle.shape.rail", "ARROW").trim(),
+                properties.getProperty("ui.visualization.mode", "VEHICLES").trim(),
+                parseInt(properties, "ui.heatmap.time.bin.seconds", 600),
+                properties.getProperty("ui.heatmap.flow.color.low", "#F7F7F7").trim(),
+                properties.getProperty("ui.heatmap.flow.color.high", "#7A0014").trim(),
+                properties.getProperty("ui.heatmap.speed.color.low", "#F7F7F7").trim(),
+                properties.getProperty("ui.heatmap.speed.color.high", "#0C4A86").trim(),
+                properties.getProperty("ui.heatmap.speed.ratio.color.low", "#F7F7F7").trim(),
+                properties.getProperty("ui.heatmap.speed.ratio.color.high", "#0A5D2A").trim(),
                 properties.getProperty("recording.default.quality", "VIEWPORT_SYNC").trim()
         );
     }

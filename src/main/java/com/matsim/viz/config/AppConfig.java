@@ -34,6 +34,14 @@ public record AppConfig(
         String uiVehicleShapeTruck,
         String uiVehicleShapeBus,
         String uiVehicleShapeRail,
+        String uiVisualizationMode,
+        int uiHeatmapTimeBinSeconds,
+        String uiFlowColorLow,
+        String uiFlowColorHigh,
+        String uiSpeedColorLow,
+        String uiSpeedColorHigh,
+        String uiSpeedRatioColorLow,
+        String uiSpeedRatioColorHigh,
         String recordingDefaultQuality
 ) {
     public boolean hasMatsimConfigFile() {

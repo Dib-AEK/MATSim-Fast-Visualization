@@ -38,6 +38,25 @@ import java.util.Set;
 import java.util.stream.Stream;
 
 public final class NetworkPanel extends JPanel {
+    public enum VisualizationMode {
+        VEHICLES("Vehicle Animation"),
+        FLOW_HEATMAP("Flow Heatmap"),
+        PT_FLOW_HEATMAP("PT Volume Heatmap"),
+        SPEED_HEATMAP("Speed Heatmap"),
+        SPEED_RATIO_HEATMAP("Speed Ratio Heatmap");
+
+        private final String label;
+
+        VisualizationMode(String label) {
+            this.label = label;
+        }
+
+        @Override
+        public String toString() {
+            return label;
+        }
+    }
+
     private static final int PARALLEL_MIN_VISIBLE_LINKS = 200;
     private static final int PARALLEL_MIN_ACTIVE_TRAVERSALS = 8_000;
     private static final int MAX_SORTED_TRAVERSALS_PER_GROUP = 512;
@@ -64,6 +83,10 @@ public final class NetworkPanel extends JPanel {
     private static final Color QUEUE_LABEL = new Color(0xFF3D3D);
     private static final Color BOTTLENECK_NORMAL = new Color(0x2E86FF);
     private static final Color BOTTLENECK_CONGESTED = new Color(0xE03030);
+    private static final Color DEFAULT_HEATMAP_LOW = new Color(0xF7F7F7);
+    private static final Color DEFAULT_FLOW_HEATMAP_HIGH = new Color(0x7A0014);
+    private static final Color DEFAULT_SPEED_HEATMAP_HIGH = new Color(0x0C4A86);
+    private static final HeatmapSnapshot EMPTY_HEATMAP_SNAPSHOT = new HeatmapSnapshot(Map.of(), 0.0, 0.0);
 
     private final SimulationModel model;
     private final PlaybackController playbackController;
@@ -71,6 +94,7 @@ public final class NetworkPanel extends JPanel {
     private final SpatialGrid spatialGrid;
     private final Set<String> selectedLinkModes = new HashSet<>();
     private final Set<String> selectedTripModes = new HashSet<>();
+    private final Set<String> selectedHeatmapTripModes = new HashSet<>();
     private final Set<String> visibleLinkIds = new HashSet<>();
     private final Map<String, LinkScreenGeometry> linkScreenGeometries = new HashMap<>();
 
@@ -102,6 +126,23 @@ public final class NetworkPanel extends JPanel {
     private boolean keepVehiclesVisibleWhenZoomedOut = true;
     private double minVehicleLengthPixels = 3.5;
     private double minVehicleWidthPixels = 1.7;
+    private VisualizationMode visualizationMode = VisualizationMode.VEHICLES;
+    private int heatmapTimeBinSeconds = 600;
+    private Color flowHeatmapLowColor = DEFAULT_HEATMAP_LOW;
+    private Color flowHeatmapHighColor = DEFAULT_FLOW_HEATMAP_HIGH;
+    private Color speedHeatmapLowColor = DEFAULT_HEATMAP_LOW;
+    private Color speedHeatmapHighColor = DEFAULT_SPEED_HEATMAP_HIGH;
+    private Color speedRatioHeatmapLowColor = DEFAULT_HEATMAP_LOW;
+    private Color speedRatioHeatmapHighColor = new Color(0x0A5D2A);
+    private boolean useSeparateHeatmapNetworkModes;
+
+    private HeatmapCacheKey cachedHeatmapKey;
+    private HeatmapSnapshot cachedHeatmapSnapshot;
+    private final Map<HeatmapCacheKey, HeatmapSnapshot> preprocessedHeatmapSnapshots = new HashMap<>();
+    private HeatmapPreparedSignature preparedHeatmapSignature;
+    private double preparedHeatmapDailyMax;
+    private volatile boolean heatmapPreprocessing;
+    private volatile double heatmapPreprocessProgress;
 
     private double zoom = 1.0;
     private double panX = 20.0;
@@ -127,6 +168,7 @@ public final class NetworkPanel extends JPanel {
         setPreferredSize(new Dimension(1200, 800));
         selectedLinkModes.addAll(defaultTransportModes(model.availableLinkModes()));
         selectedTripModes.addAll(defaultTransportModes(model.availableTripModes()));
+        selectedHeatmapTripModes.addAll(defaultTransportModes(model.availableTripModes()));
 
         MouseAdapter mouseAdapter = new MouseAdapter() {
             @Override
@@ -182,6 +224,255 @@ public final class NetworkPanel extends JPanel {
         selectedTripModes.clear();
         if (modes != null) {
             modes.forEach(mode -> selectedTripModes.add(normalizeMode(mode)));
+        }
+        repaint();
+    }
+
+    public VisualizationMode getVisualizationMode() {
+        return visualizationMode;
+    }
+
+    public void setVisualizationMode(VisualizationMode mode) {
+        this.visualizationMode = mode == null ? VisualizationMode.VEHICLES : mode;
+        invalidateNetworkCache();
+        invalidateHeatmapCache();
+        repaint();
+    }
+
+    public void setSelectedHeatmapTripModes(Set<String> modes) {
+        selectedHeatmapTripModes.clear();
+        if (modes != null) {
+            modes.forEach(mode -> selectedHeatmapTripModes.add(normalizeMode(mode)));
+        }
+        invalidateNetworkCache();
+        invalidateHeatmapCache();
+        repaint();
+    }
+
+    public int getHeatmapTimeBinSeconds() {
+        return heatmapTimeBinSeconds;
+    }
+
+    public void setHeatmapTimeBinSeconds(int seconds) {
+        this.heatmapTimeBinSeconds = Math.max(30, seconds);
+        invalidateHeatmapCache();
+        repaint();
+    }
+
+    public Color getFlowHeatmapLowColor() {
+        return flowHeatmapLowColor;
+    }
+
+    public void setFlowHeatmapLowColor(Color color) {
+        this.flowHeatmapLowColor = color == null ? DEFAULT_HEATMAP_LOW : color;
+        repaint();
+    }
+
+    public Color getFlowHeatmapHighColor() {
+        return flowHeatmapHighColor;
+    }
+
+    public void setFlowHeatmapHighColor(Color color) {
+        this.flowHeatmapHighColor = color == null ? DEFAULT_FLOW_HEATMAP_HIGH : color;
+        repaint();
+    }
+
+    public Color getSpeedHeatmapLowColor() {
+        return speedHeatmapLowColor;
+    }
+
+    public void setSpeedHeatmapLowColor(Color color) {
+        this.speedHeatmapLowColor = color == null ? DEFAULT_HEATMAP_LOW : color;
+        repaint();
+    }
+
+    public Color getSpeedHeatmapHighColor() {
+        return speedHeatmapHighColor;
+    }
+
+    public void setSpeedHeatmapHighColor(Color color) {
+        this.speedHeatmapHighColor = color == null ? DEFAULT_SPEED_HEATMAP_HIGH : color;
+        repaint();
+    }
+
+    public Color getSpeedRatioHeatmapLowColor() {
+        return speedRatioHeatmapLowColor;
+    }
+
+    public void setSpeedRatioHeatmapLowColor(Color color) {
+        this.speedRatioHeatmapLowColor = color == null ? DEFAULT_HEATMAP_LOW : color;
+        repaint();
+    }
+
+    public Color getSpeedRatioHeatmapHighColor() {
+        return speedRatioHeatmapHighColor;
+    }
+
+    public void setSpeedRatioHeatmapHighColor(Color color) {
+        this.speedRatioHeatmapHighColor = color == null ? new Color(0x0A5D2A) : color;
+        repaint();
+    }
+
+    public boolean isUseSeparateHeatmapNetworkModes() {
+        return useSeparateHeatmapNetworkModes;
+    }
+
+    public void setUseSeparateHeatmapNetworkModes(boolean enabled) {
+        this.useSeparateHeatmapNetworkModes = enabled;
+        invalidateNetworkCache();
+        repaint();
+    }
+
+    public boolean isHeatmapPreprocessing() {
+        return heatmapPreprocessing;
+    }
+
+    public double heatmapPreprocessProgress() {
+        return heatmapPreprocessProgress;
+    }
+
+    public void markHeatmapPreprocessingStarted() {
+        heatmapPreprocessing = true;
+        heatmapPreprocessProgress = 0.0;
+        repaint();
+    }
+
+    public void markHeatmapPreprocessingFinished() {
+        heatmapPreprocessProgress = 1.0;
+        heatmapPreprocessing = false;
+        repaint();
+    }
+
+    public boolean isHeatmapPreparedForCurrentSettings() {
+        HeatmapPreparedSignature signature = currentHeatmapSignature();
+        if (signature == null) {
+            return true;
+        }
+        synchronized (this) {
+            return signature.equals(preparedHeatmapSignature);
+        }
+    }
+
+    public void preprocessHeatmapsForCurrentSettings() {
+        HeatmapPreparedSignature signature = currentHeatmapSignature();
+        if (signature == null) {
+            return;
+        }
+
+        int binSize = signature.binSizeSeconds();
+        int firstBinStart = (int) Math.floor(playbackController.getStartTime() / binSize) * binSize;
+        int lastBinStart = (int) Math.floor(playbackController.getEndTime() / binSize) * binSize;
+        int totalBins = Math.max(1, ((lastBinStart - firstBinStart) / binSize) + 1);
+
+        Map<Integer, Map<String, Double>> flowCountByBin = new HashMap<>();
+        Map<Integer, Map<String, Double>> speedSumByBin = new HashMap<>();
+        Map<Integer, Map<String, Integer>> speedCountByBin = new HashMap<>();
+
+        int traversalCount = model.traversalCount();
+        for (int i = 0; i < traversalCount; i++) {
+            if ((i & 8191) == 0) {
+                heatmapPreprocessProgress = Math.min(0.80, 0.80 * (i / (double) Math.max(1, traversalCount)));
+            }
+
+            String tripMode = model.traversalTripMode(i);
+            if (!shouldAggregateTripModeForSignature(tripMode, signature)) {
+                continue;
+            }
+            if (signature.mode() == VisualizationMode.PT_FLOW_HEATMAP && !isPtMode(tripMode)) {
+                continue;
+            }
+
+            double enter = model.traversalEnterTime(i);
+            if (enter < firstBinStart || enter >= (lastBinStart + binSize)) {
+                continue;
+            }
+
+            int binStart = (int) Math.floor(enter / binSize) * binSize;
+            String linkId = model.traversalLinkId(i);
+
+            if (signature.mode() == VisualizationMode.FLOW_HEATMAP
+                    || signature.mode() == VisualizationMode.PT_FLOW_HEATMAP) {
+                flowCountByBin
+                        .computeIfAbsent(binStart, ignored -> new HashMap<>())
+                        .merge(linkId, 1.0, Double::sum);
+                continue;
+            }
+
+            LinkSegment link = model.networkData().getLinks().get(linkId);
+            if (link == null || link.length() <= 0.0) {
+                continue;
+            }
+
+            double duration = Math.max(0.05, model.traversalLeaveTime(i) - enter);
+            double speedMetersPerSecond = link.length() / duration;
+            double metricValue = signature.mode() == VisualizationMode.SPEED_HEATMAP
+                    ? speedMetersPerSecond * 3.6
+                    : speedMetersPerSecond / Math.max(0.1, link.freeSpeed());
+
+            speedSumByBin
+                    .computeIfAbsent(binStart, ignored -> new HashMap<>())
+                    .merge(linkId, metricValue, Double::sum);
+            speedCountByBin
+                    .computeIfAbsent(binStart, ignored -> new HashMap<>())
+                    .merge(linkId, 1, Integer::sum);
+        }
+
+        Map<HeatmapCacheKey, HeatmapSnapshot> computed = new HashMap<>();
+        double dailyMax = 0.0;
+        for (int binIndex = 0, binStart = firstBinStart; binStart <= lastBinStart; binStart += binSize, binIndex++) {
+            Map<String, Double> values = new HashMap<>();
+
+            if (signature.mode() == VisualizationMode.FLOW_HEATMAP
+                    || signature.mode() == VisualizationMode.PT_FLOW_HEATMAP) {
+                Map<String, Double> counts = flowCountByBin.get(binStart);
+                if (counts != null) {
+                    double factor = 3600.0 / binSize;
+                    for (Map.Entry<String, Double> entry : counts.entrySet()) {
+                        values.put(entry.getKey(), entry.getValue() * factor);
+                    }
+                }
+            } else {
+                Map<String, Double> sums = speedSumByBin.get(binStart);
+                Map<String, Integer> counts = speedCountByBin.get(binStart);
+                if (sums != null && counts != null) {
+                    for (Map.Entry<String, Double> entry : sums.entrySet()) {
+                        int count = counts.getOrDefault(entry.getKey(), 0);
+                        if (count > 0) {
+                            values.put(entry.getKey(), entry.getValue() / count);
+                        }
+                    }
+                }
+            }
+
+            double minValue = Double.POSITIVE_INFINITY;
+            double maxValue = 0.0;
+            for (double value : values.values()) {
+                minValue = Math.min(minValue, value);
+                maxValue = Math.max(maxValue, value);
+            }
+            dailyMax = Math.max(dailyMax, maxValue);
+            if (!Double.isFinite(minValue)) {
+                minValue = 0.0;
+            }
+
+            HeatmapCacheKey key = new HeatmapCacheKey(
+                    signature.mode(),
+                    binStart,
+                    signature.binSizeSeconds(),
+                    signature.selectedModesKey()
+            );
+            computed.put(key, new HeatmapSnapshot(values, minValue, maxValue));
+
+            heatmapPreprocessProgress = 0.80 + 0.20 * ((binIndex + 1) / (double) totalBins);
+        }
+
+        synchronized (this) {
+            preprocessedHeatmapSnapshots.clear();
+            preprocessedHeatmapSnapshots.putAll(computed);
+            preparedHeatmapSignature = signature;
+            preparedHeatmapDailyMax = dailyMax;
+            cachedHeatmapKey = null;
+            cachedHeatmapSnapshot = null;
         }
         repaint();
     }
@@ -496,6 +787,7 @@ public final class NetworkPanel extends JPanel {
     private void renderScene(Graphics2D g2, boolean drawOverlays, boolean drawQueueText) {
 
         renderNetworkLayerIfNeeded();
+        boolean vehicleMode = visualizationMode == VisualizationMode.VEHICLES;
         if (cachedNetworkLayer != null) {
             int panShiftX = (int) Math.round(panX - cachedPanX);
             int panShiftY = (int) Math.round(cachedPanY - panY);
@@ -503,14 +795,22 @@ public final class NetworkPanel extends JPanel {
             Graphics2D worldGraphics = (Graphics2D) g2.create();
             worldGraphics.translate(panShiftX, panShiftY);
             worldGraphics.drawImage(cachedNetworkLayer, 0, 0, null);
-            drawVehicles(worldGraphics);
-            if (drawQueueText) {
+            if (vehicleMode) {
+                drawVehicles(worldGraphics);
+            } else {
+                drawHeatmap(worldGraphics);
+            }
+            if (vehicleMode && drawQueueText) {
                 drawQueueLabels(worldGraphics);
             }
             worldGraphics.dispose();
         } else {
-            drawVehicles(g2);
-            if (drawQueueText) {
+            if (vehicleMode) {
+                drawVehicles(g2);
+            } else {
+                drawHeatmap(g2);
+            }
+            if (vehicleMode && drawQueueText) {
                 drawQueueLabels(g2);
             }
         }
@@ -519,6 +819,72 @@ public final class NetworkPanel extends JPanel {
             drawClockOverlay(g2);
             drawLegendOverlay(g2);
         }
+
+        if (heatmapPreprocessing) {
+            drawPreprocessingOverlay(g2);
+        }
+    }
+
+    private void drawPreprocessingOverlay(Graphics2D g2) {
+        g2.setColor(new Color(0, 0, 0, 110));
+        g2.fillRect(0, 0, getWidth(), getHeight());
+
+        int boxWidth = 280;
+        int boxHeight = 108;
+        int x = (getWidth() - boxWidth) / 2;
+        int y = (getHeight() - boxHeight) / 2;
+
+        g2.setColor(darkTheme ? new Color(0x121212) : new Color(0xF2F2F2));
+        g2.fillRoundRect(x, y, boxWidth, boxHeight, 14, 14);
+        g2.setColor(darkTheme ? new Color(0x6A6A6A) : new Color(0xA0A0A0));
+        g2.drawRoundRect(x, y, boxWidth, boxHeight, 14, 14);
+
+        int spinnerSize = 26;
+        int spinnerX = x + 18;
+        int spinnerY = y + 22;
+        int angle = (int) ((System.nanoTime() / 7_000_000L) % 360);
+
+        g2.setStroke(new BasicStroke(3.0f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+        g2.setColor(darkTheme ? new Color(0xB5B5B5) : new Color(0x777777));
+        g2.drawOval(spinnerX, spinnerY, spinnerSize, spinnerSize);
+        g2.setColor(darkTheme ? new Color(0xFFFFFF) : new Color(0x2A2A2A));
+        g2.drawArc(spinnerX, spinnerY, spinnerSize, spinnerSize, angle, 110);
+
+        g2.setColor(darkTheme ? new Color(0xECECEC) : new Color(0x1A1A1A));
+        g2.drawString("Preprocessing heatmaps...", x + 56, y + 40);
+
+        int progressBarX = x + 18;
+        int progressBarY = y + 62;
+        int progressBarW = boxWidth - 36;
+        int progressBarH = 14;
+        g2.setColor(darkTheme ? new Color(0x2F2F2F) : new Color(0xD6D6D6));
+        g2.fillRoundRect(progressBarX, progressBarY, progressBarW, progressBarH, 8, 8);
+
+        int filled = (int) Math.round(progressBarW * Math.max(0.0, Math.min(1.0, heatmapPreprocessProgress)));
+        g2.setColor(darkTheme ? new Color(0x5DA9FF) : new Color(0x306FBA));
+        g2.fillRoundRect(progressBarX, progressBarY, filled, progressBarH, 8, 8);
+
+        g2.setColor(darkTheme ? new Color(0xDFDFDF) : new Color(0x262626));
+        g2.drawString((int) Math.round(heatmapPreprocessProgress * 100) + "%", x + boxWidth - 44, y + 92);
+    }
+
+    private void drawPreprocessRequiredOverlay(Graphics2D g2) {
+        g2.setColor(new Color(0, 0, 0, 90));
+        g2.fillRect(0, 0, getWidth(), getHeight());
+
+        int boxWidth = 310;
+        int boxHeight = 70;
+        int x = (getWidth() - boxWidth) / 2;
+        int y = (getHeight() - boxHeight) / 2;
+
+        g2.setColor(darkTheme ? new Color(0x151515) : new Color(0xF3F3F3));
+        g2.fillRoundRect(x, y, boxWidth, boxHeight, 14, 14);
+        g2.setColor(darkTheme ? new Color(0x6A6A6A) : new Color(0xA0A0A0));
+        g2.drawRoundRect(x, y, boxWidth, boxHeight, 14, 14);
+
+        g2.setColor(darkTheme ? new Color(0xEFEFEF) : new Color(0x1A1A1A));
+        g2.drawString("Heatmap settings changed.", x + 18, y + 30);
+        g2.drawString("Click Apply Bin + Preprocess to update.", x + 18, y + 50);
     }
 
     private void ensureFitted() {
@@ -620,7 +986,7 @@ public final class NetworkPanel extends JPanel {
             double offsetX = 0;
             double offsetY = 0;
             if (hasReverse) {
-                double shift = roadWidth * bidirectionalOffset;
+                double shift = laneWidth * laneCount * bidirectionalOffset;
                 offsetX = nx * shift;
                 offsetY = ny * shift;
                 a.x += offsetX;
@@ -752,6 +1118,262 @@ public final class NetworkPanel extends JPanel {
                     prepared.linkIsBottleneck()
             );
         }
+    }
+
+    private void drawHeatmap(Graphics2D g2) {
+        if (visualizationMode == VisualizationMode.VEHICLES || linkScreenGeometries.isEmpty()) {
+            return;
+        }
+
+        HeatmapInterpolation interpolation = resolveHeatmapInterpolation();
+        if (!interpolation.prepared()) {
+            drawPreprocessRequiredOverlay(g2);
+            return;
+        }
+
+        Color lowColor = heatmapLowColor();
+        Color highColor = heatmapHighColor();
+        double maxValue = interpolation.maxValueForScale();
+
+        for (Map.Entry<String, LinkScreenGeometry> entry : linkScreenGeometries.entrySet()) {
+            String linkId = entry.getKey();
+            LinkScreenGeometry geometry = entry.getValue();
+            LinkSegment link = model.networkData().getLinks().get(linkId);
+            if (link == null || !shouldRenderLink(link)) {
+                continue;
+            }
+
+            double valueA = interpolation.currentBinSnapshot().values().getOrDefault(linkId, 0.0);
+            double valueB = interpolation.nextBinSnapshot().values().getOrDefault(linkId, valueA);
+            double value = valueA + (valueB - valueA) * interpolation.alpha();
+            double normalized = heatmapLogNormalized(value, maxValue);
+
+            float roadWidth = (float) Math.max(0.35, Math.min(32.0, geometry.laneWidth() * geometry.laneCount()));
+            g2.setStroke(new BasicStroke(roadWidth, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+            g2.setColor(interpolateColor(lowColor, highColor, normalized));
+            g2.drawLine(
+                    (int) Math.round(geometry.fromX()),
+                    (int) Math.round(geometry.fromY()),
+                    (int) Math.round(geometry.fromX() + geometry.dx()),
+                    (int) Math.round(geometry.fromY() + geometry.dy())
+            );
+        }
+    }
+
+    private HeatmapInterpolation resolveHeatmapInterpolation() {
+        double currentTime = playbackController.getCurrentTime();
+        int binSize = Math.max(30, heatmapTimeBinSeconds);
+        int binStart = (int) Math.floor(currentTime / binSize) * binSize;
+
+        HeatmapPreparedSignature signature = currentHeatmapSignature();
+        if (signature == null) {
+            return new HeatmapInterpolation(EMPTY_HEATMAP_SNAPSHOT, EMPTY_HEATMAP_SNAPSHOT, 0.0, 0.0, true);
+        }
+
+        HeatmapCacheKey currentKey = new HeatmapCacheKey(
+                signature.mode(),
+                binStart,
+                signature.binSizeSeconds(),
+                signature.selectedModesKey()
+        );
+        HeatmapCacheKey nextKey = new HeatmapCacheKey(
+                signature.mode(),
+                binStart + binSize,
+                signature.binSizeSeconds(),
+                signature.selectedModesKey()
+        );
+
+        HeatmapSnapshot currentSnapshot;
+        HeatmapSnapshot nextSnapshot;
+        double fixedDailyMax;
+        synchronized (this) {
+            if (!signature.equals(preparedHeatmapSignature)) {
+                return new HeatmapInterpolation(EMPTY_HEATMAP_SNAPSHOT, EMPTY_HEATMAP_SNAPSHOT, 0.0, 0.0, false);
+            }
+
+            currentSnapshot = preprocessedHeatmapSnapshots.get(currentKey);
+            nextSnapshot = preprocessedHeatmapSnapshots.get(nextKey);
+            fixedDailyMax = preparedHeatmapDailyMax;
+        }
+
+        if (currentSnapshot == null) {
+            return new HeatmapInterpolation(EMPTY_HEATMAP_SNAPSHOT, EMPTY_HEATMAP_SNAPSHOT, 0.0, 0.0, false);
+        }
+        if (nextSnapshot == null) {
+            nextSnapshot = currentSnapshot;
+        }
+
+        double alpha = (currentTime - binStart) / Math.max(1.0, binSize);
+        alpha = Math.max(0.0, Math.min(1.0, alpha));
+        double maxValueForScale = fixedDailyMax;
+        if (maxValueForScale < 0.0) {
+            maxValueForScale = 0.0;
+        }
+
+        return new HeatmapInterpolation(currentSnapshot, nextSnapshot, alpha, maxValueForScale, true);
+    }
+
+    private HeatmapPreparedSignature currentHeatmapSignature() {
+        if (visualizationMode == VisualizationMode.VEHICLES) {
+            return null;
+        }
+        String selectedModesKey = String.join("|", selectedHeatmapTripModes.stream().sorted().toList());
+        return new HeatmapPreparedSignature(
+                visualizationMode,
+                Math.max(30, heatmapTimeBinSeconds),
+                selectedModesKey,
+                Set.copyOf(selectedHeatmapTripModes)
+        );
+    }
+
+    private static boolean shouldAggregateTripModeForSignature(
+            String tripMode,
+            HeatmapPreparedSignature signature
+    ) {
+        if (signature.selectedModes().isEmpty()) {
+            return false;
+        }
+        if (tripMode == null || tripMode.isBlank()) {
+            return false;
+        }
+        return signature.selectedModes().contains(normalizeMode(tripMode));
+    }
+
+    private HeatmapSnapshot computeHeatmapSnapshot(int binStartSeconds, int binEndSeconds) {
+        Map<String, Double> values = new HashMap<>();
+        Map<String, Double> speedSums = new HashMap<>();
+        Map<String, Integer> speedCounts = new HashMap<>();
+
+        int binSizeSeconds = Math.max(1, binEndSeconds - binStartSeconds);
+        boolean flowMode = visualizationMode == VisualizationMode.FLOW_HEATMAP
+                || visualizationMode == VisualizationMode.PT_FLOW_HEATMAP;
+        boolean speedMode = visualizationMode == VisualizationMode.SPEED_HEATMAP;
+        boolean speedRatioMode = visualizationMode == VisualizationMode.SPEED_RATIO_HEATMAP;
+
+        int traversalCount = model.traversalCount();
+        for (int i = 0; i < traversalCount; i++) {
+            String tripMode = model.traversalTripMode(i);
+            if (!shouldAggregateTripMode(tripMode)) {
+                continue;
+            }
+            if (visualizationMode == VisualizationMode.PT_FLOW_HEATMAP && !isPtMode(tripMode)) {
+                continue;
+            }
+
+            double enter = model.traversalEnterTime(i);
+            if (enter < binStartSeconds || enter >= binEndSeconds) {
+                continue;
+            }
+
+            String linkId = model.traversalLinkId(i);
+            if (flowMode) {
+                values.merge(linkId, 1.0, Double::sum);
+                continue;
+            }
+
+            LinkSegment link = model.networkData().getLinks().get(linkId);
+            if (link == null || link.length() <= 0.0) {
+                continue;
+            }
+
+            double duration = Math.max(0.05, model.traversalLeaveTime(i) - enter);
+            double speedMetersPerSecond = link.length() / duration;
+            if (speedMode) {
+                speedSums.merge(linkId, speedMetersPerSecond * 3.6, Double::sum);
+            } else if (speedRatioMode) {
+                double freeSpeed = Math.max(0.1, link.freeSpeed());
+                speedSums.merge(linkId, speedMetersPerSecond / freeSpeed, Double::sum);
+            }
+            speedCounts.merge(linkId, 1, Integer::sum);
+        }
+
+        if (flowMode) {
+            double factor = 3600.0 / binSizeSeconds;
+            for (Map.Entry<String, Double> entry : values.entrySet()) {
+                entry.setValue(entry.getValue() * factor);
+            }
+        }
+
+        if (speedMode || speedRatioMode) {
+            for (Map.Entry<String, Double> entry : speedSums.entrySet()) {
+                String linkId = entry.getKey();
+                int count = speedCounts.getOrDefault(linkId, 0);
+                if (count > 0) {
+                    values.put(linkId, entry.getValue() / count);
+                }
+            }
+        }
+
+        double minValue = Double.POSITIVE_INFINITY;
+        double maxValue = 0.0;
+        for (double value : values.values()) {
+            minValue = Math.min(minValue, value);
+            maxValue = Math.max(maxValue, value);
+        }
+        if (!Double.isFinite(minValue)) {
+            minValue = 0.0;
+        }
+
+        return new HeatmapSnapshot(values, minValue, maxValue);
+    }
+
+    private boolean shouldAggregateTripMode(String tripMode) {
+        if (model.availableTripModes().isEmpty()) {
+            return true;
+        }
+        if (selectedHeatmapTripModes.isEmpty()) {
+            return false;
+        }
+        if (tripMode == null || tripMode.isBlank()) {
+            return false;
+        }
+        return selectedHeatmapTripModes.contains(normalizeMode(tripMode));
+    }
+
+    private Set<String> effectiveHeatmapNetworkModes() {
+        if (visualizationMode == VisualizationMode.PT_FLOW_HEATMAP) {
+            Set<String> ptModes = new HashSet<>();
+            for (String mode : selectedHeatmapTripModes) {
+                if (isPtMode(mode)) {
+                    ptModes.add(mode);
+                }
+            }
+            return ptModes;
+        }
+        return selectedHeatmapTripModes;
+    }
+
+    private Color heatmapLowColor() {
+        return switch (visualizationMode) {
+            case FLOW_HEATMAP, PT_FLOW_HEATMAP -> flowHeatmapLowColor;
+            case SPEED_HEATMAP -> speedHeatmapLowColor;
+            case SPEED_RATIO_HEATMAP -> speedRatioHeatmapLowColor;
+            case VEHICLES -> DEFAULT_HEATMAP_LOW;
+        };
+    }
+
+    private Color heatmapHighColor() {
+        return switch (visualizationMode) {
+            case FLOW_HEATMAP, PT_FLOW_HEATMAP -> flowHeatmapHighColor;
+            case SPEED_HEATMAP -> speedHeatmapHighColor;
+            case SPEED_RATIO_HEATMAP -> speedRatioHeatmapHighColor;
+            case VEHICLES -> DEFAULT_FLOW_HEATMAP_HIGH;
+        };
+    }
+
+    private static double heatmapLogNormalized(double value, double maxValue) {
+        if (value <= 0.0 || maxValue <= 0.0) {
+            return 0.0;
+        }
+        return Math.log1p(value) / Math.log1p(maxValue);
+    }
+
+    private static Color interpolateColor(Color low, Color high, double t) {
+        double clamped = Math.max(0.0, Math.min(1.0, t));
+        int red = (int) Math.round(low.getRed() + (high.getRed() - low.getRed()) * clamped);
+        int green = (int) Math.round(low.getGreen() + (high.getGreen() - low.getGreen()) * clamped);
+        int blue = (int) Math.round(low.getBlue() + (high.getBlue() - low.getBlue()) * clamped);
+        return new Color(red, green, blue);
     }
 
     private void drawModeGroup(
@@ -911,6 +1533,11 @@ public final class NetworkPanel extends JPanel {
         lastNetworkRenderNanos = 0L;
     }
 
+    private void invalidateHeatmapCache() {
+        cachedHeatmapKey = null;
+        cachedHeatmapSnapshot = null;
+    }
+
     private PreparedLinkVehicles prepareLinkVehicles(
             String linkId,
             PlaybackController.LinkFrameSnapshot linkState,
@@ -1040,10 +1667,16 @@ public final class NetworkPanel extends JPanel {
         if (model.availableLinkModes().isEmpty()) {
             return true;
         }
-        if (selectedLinkModes.isEmpty()) {
+
+        Set<String> activeModes = selectedLinkModes;
+        if (visualizationMode != VisualizationMode.VEHICLES && !useSeparateHeatmapNetworkModes) {
+            activeModes = effectiveHeatmapNetworkModes();
+        }
+
+        if (activeModes.isEmpty()) {
             return false;
         }
-        for (String mode : selectedLinkModes) {
+        for (String mode : activeModes) {
             if (link.allowedModes().contains(mode)) {
                 return true;
             }
@@ -1145,15 +1778,22 @@ public final class NetworkPanel extends JPanel {
     }
 
     private void drawLegendOverlay(Graphics2D g2) {
+        if (visualizationMode != VisualizationMode.VEHICLES) {
+            drawHeatmapLegendOverlay(g2);
+            return;
+        }
+
         List<LegendEntry> entries = legendEntriesToDraw();
         if (entries.isEmpty()) {
             return;
         }
 
+        String legendTitle = legendTitle();
+
         FontMetrics metrics = g2.getFontMetrics();
         int maxEntries = Math.min(11, entries.size());
         int rowHeight = 18;
-        int maxLabelWidth = metrics.stringWidth("Legend");
+        int maxLabelWidth = metrics.stringWidth(legendTitle);
         for (int i = 0; i < maxEntries; i++) {
             maxLabelWidth = Math.max(maxLabelWidth, metrics.stringWidth(entries.get(i).label()));
         }
@@ -1168,7 +1808,7 @@ public final class NetworkPanel extends JPanel {
         g2.drawRoundRect(x, y, width, height, 10, 10);
 
         g2.setColor(darkTheme ? new Color(0xEFEFEF) : new Color(0x202020));
-        g2.drawString("Legend", x + 10, y + 18);
+        g2.drawString(legendTitle, x + 10, y + 18);
 
         for (int i = 0; i < maxEntries; i++) {
             LegendEntry entry = entries.get(i);
@@ -1178,6 +1818,64 @@ public final class NetworkPanel extends JPanel {
             g2.setColor(darkTheme ? new Color(0xEFEFEF) : new Color(0x202020));
             g2.drawString(entry.label(), x + 28, rowY);
         }
+    }
+
+    private void drawHeatmapLegendOverlay(Graphics2D g2) {
+        HeatmapInterpolation interpolation = resolveHeatmapInterpolation();
+        if (!interpolation.prepared()) {
+            return;
+        }
+
+        double maxValue = interpolation.maxValueForScale();
+        String legendTitle = legendTitle();
+        String legendMin = formatHeatmapLegendValue(0.0);
+        String legendMid = formatHeatmapLegendValue(maxValue <= 0.0 ? 0.0 : Math.expm1(Math.log1p(maxValue) * 0.5));
+        String legendMax = formatHeatmapLegendValue(maxValue);
+
+        int width = Math.min(getWidth() - 24, 290);
+        int height = 92;
+        int x = getWidth() - width - 12;
+        int y = 72;
+
+        g2.setColor(darkTheme ? new Color(0x101010) : new Color(0xF0F0F0));
+        g2.fillRoundRect(x, y, width, height, 10, 10);
+        g2.setColor(darkTheme ? new Color(0x5A5A5A) : new Color(0xB0B0B0));
+        g2.drawRoundRect(x, y, width, height, 10, 10);
+
+        g2.setColor(darkTheme ? new Color(0xEFEFEF) : new Color(0x202020));
+        g2.drawString(legendTitle, x + 10, y + 18);
+        g2.drawString("Log scale", x + width - 68, y + 18);
+
+        int barX = x + 12;
+        int barY = y + 32;
+        int barWidth = width - 24;
+        int barHeight = 16;
+        Color low = heatmapLowColor();
+        Color high = heatmapHighColor();
+        for (int i = 0; i < barWidth; i++) {
+            double t = barWidth <= 1 ? 0.0 : (double) i / (barWidth - 1);
+            g2.setColor(interpolateColor(low, high, t));
+            g2.drawLine(barX + i, barY, barX + i, barY + barHeight - 1);
+        }
+        g2.setColor(darkTheme ? new Color(0x777777) : new Color(0x909090));
+        g2.drawRect(barX, barY, barWidth, barHeight);
+
+        g2.setColor(darkTheme ? new Color(0xEFEFEF) : new Color(0x202020));
+        FontMetrics metrics = g2.getFontMetrics();
+        int labelsY = barY + barHeight + 16;
+        g2.drawString(legendMin, barX, labelsY);
+        g2.drawString(legendMid, barX + (barWidth - metrics.stringWidth(legendMid)) / 2, labelsY);
+        g2.drawString(legendMax, barX + barWidth - metrics.stringWidth(legendMax), labelsY);
+    }
+
+    private String legendTitle() {
+        return switch (visualizationMode) {
+            case FLOW_HEATMAP -> "Flow (veh/h)";
+            case PT_FLOW_HEATMAP -> "PT Volume (veh/h)";
+            case SPEED_HEATMAP -> "Speed (km/h)";
+            case SPEED_RATIO_HEATMAP -> "Speed Ratio (v/freeSpeed)";
+            case VEHICLES -> "Legend";
+        };
     }
 
     private List<LegendEntry> legendEntriesToDraw() {
@@ -1229,6 +1927,17 @@ public final class NetworkPanel extends JPanel {
         return List.of();
     }
 
+    private String formatHeatmapLegendValue(double value) {
+        if (visualizationMode == VisualizationMode.FLOW_HEATMAP
+                || visualizationMode == VisualizationMode.PT_FLOW_HEATMAP) {
+            return String.format(Locale.ROOT, "%.1f", value);
+        }
+        if (visualizationMode == VisualizationMode.SPEED_RATIO_HEATMAP) {
+            return String.format(Locale.ROOT, "%.3f", value);
+        }
+        return String.format(Locale.ROOT, "%.2f", value);
+    }
+
     private static boolean isBikeMode(String mode) {
         if (mode == null) {
             return false;
@@ -1269,6 +1978,10 @@ public final class NetworkPanel extends JPanel {
                 || normalized.equals("metro")
                 || normalized.equals("ferry")
                 || normalized.equals("funicular");
+    }
+
+    private static boolean isPtMode(String mode) {
+        return isBusMode(mode) || isRailMode(mode);
     }
 
     private static double clampWidthRatio(double value) {
@@ -1327,6 +2040,34 @@ public final class NetworkPanel extends JPanel {
     }
 
     private record LegendEntry(String label, Color color) {
+    }
+
+    private record HeatmapCacheKey(
+            VisualizationMode mode,
+            int binStartSeconds,
+            int binSizeSeconds,
+            String selectedModesKey
+    ) {
+    }
+
+    private record HeatmapSnapshot(Map<String, Double> values, double minValue, double maxValue) {
+    }
+
+        private record HeatmapInterpolation(
+            HeatmapSnapshot currentBinSnapshot,
+            HeatmapSnapshot nextBinSnapshot,
+            double alpha,
+            double maxValueForScale,
+            boolean prepared
+        ) {
+        }
+
+    private record HeatmapPreparedSignature(
+            VisualizationMode mode,
+            int binSizeSeconds,
+            String selectedModesKey,
+            Set<String> selectedModes
+    ) {
     }
 
 }

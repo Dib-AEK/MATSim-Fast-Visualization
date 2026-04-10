@@ -23,13 +23,21 @@ public final class MatsimScenarioLoader {
 
         Path matsimConfigPath = appConfig.matsimConfigFile().toAbsolutePath().normalize();
         Config matsimConfig = ConfigUtils.loadConfig(matsimConfigPath.toString());
-        Path networkFile = resolveConfigInputPath(matsimConfigPath, matsimConfig.network().getInputFile(), "network.inputFile");
-        Path populationFile = resolveConfigInputPath(matsimConfigPath, matsimConfig.plans().getInputFile(), "plans.inputFile");
+        Path networkFile = resolveNetworkFile(matsimConfigPath, matsimConfig);
+        Path populationFile = resolvePopulationFile(matsimConfigPath, matsimConfig);
         Path eventsFile = resolveEventsFile(matsimConfigPath, matsimConfig);
         Path tripsFile = resolveTripsFile(matsimConfigPath, matsimConfig);
         Path outputPersonsFile = resolveOutputPersonsFile(matsimConfigPath, matsimConfig);
         Path outputPlansFile = resolveOutputPlansFile(matsimConfigPath, matsimConfig);
         Path transitScheduleFile = resolveTransitScheduleFile(matsimConfigPath, matsimConfig);
+
+        // Enforce the resolved paths in the config so ScenarioUtils loads the intended scenario data.
+        matsimConfig.network().setInputFile(networkFile.toString());
+        matsimConfig.plans().setInputFile(populationFile.toString());
+        if (transitScheduleFile != null) {
+            matsimConfig.transit().setUseTransit(true);
+            matsimConfig.transit().setTransitScheduleFile(transitScheduleFile.toString());
+        }
 
         return new ResolvedSimulationInputs(
                 matsimConfigPath,
@@ -45,7 +53,8 @@ public final class MatsimScenarioLoader {
     }
 
     public MatsimScenarioBundle load(ResolvedSimulationInputs inputs) {
-        Scenario scenario = ScenarioUtils.loadScenario(inputs.matsimConfig());
+        Scenario scenario = ScenarioUtils.createScenario(inputs.matsimConfig());
+        ScenarioUtils.loadScenario(scenario);
         Map<String, VehicleMetadata> metadata = new HashMap<>(
                 PopulationMetadataExtractor.fromPopulation(scenario.getPopulation())
         );
@@ -73,6 +82,45 @@ public final class MatsimScenarioLoader {
                 MatsimNetworkConverter.fromMatsim(scenario.getNetwork()),
                 metadata
         );
+    }
+
+    private static Path resolveNetworkFile(Path matsimConfigPath, Config matsimConfig) {
+        Path configured = resolveConfigInputPath(matsimConfigPath, matsimConfig.network().getInputFile(), "network.inputFile");
+        Path outputDir = outputDirectory(matsimConfigPath, matsimConfig);
+        String runId = matsimConfig.controller().getRunId();
+
+        List<Path> candidates = new ArrayList<>();
+        candidates.add(outputDir.resolve("output_network.xml.gz"));
+        candidates.add(outputDir.resolve("output_network.xml"));
+        if (runId != null && !runId.isBlank()) {
+            candidates.add(outputDir.resolve(runId + ".output_network.xml.gz"));
+            candidates.add(outputDir.resolve(runId + ".output_network.xml"));
+        }
+
+        for (Path candidate : candidates) {
+            if (Files.exists(candidate)) {
+                return candidate;
+            }
+        }
+
+        if (Files.exists(configured)) {
+            return configured;
+        }
+
+        throw new IllegalArgumentException("Could not locate network file. Tried: " + candidates + " and configured path: " + configured);
+    }
+
+    private static Path resolvePopulationFile(Path matsimConfigPath, Config matsimConfig) {
+        Path configured = resolveConfigInputPath(matsimConfigPath, matsimConfig.plans().getInputFile(), "plans.inputFile");
+        Path outputPlans = resolveOutputPlansFile(matsimConfigPath, matsimConfig);
+        if (outputPlans != null) {
+            return outputPlans;
+        }
+        if (Files.exists(configured)) {
+            return configured;
+        }
+
+        throw new IllegalArgumentException("Could not locate population/plans file. Configured path: " + configured);
     }
 
     private static void mergeMetadata(Map<String, VehicleMetadata> base, Map<String, VehicleMetadata> updates) {

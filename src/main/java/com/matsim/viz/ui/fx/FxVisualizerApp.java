@@ -15,6 +15,7 @@ import javafx.collections.FXCollections;
 import javafx.embed.swing.SwingNode;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
+import javafx.geometry.Rectangle2D;
 import javafx.scene.Node;
 import javafx.scene.Scene;
 import javafx.scene.control.Alert;
@@ -33,6 +34,7 @@ import javafx.scene.layout.Priority;
 import javafx.scene.layout.Region;
 import javafx.scene.layout.VBox;
 import javafx.scene.paint.Color;
+import javafx.stage.Screen;
 import javafx.stage.Stage;
 
 import javax.swing.SwingUtilities;
@@ -44,9 +46,13 @@ import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
@@ -60,6 +66,8 @@ public final class FxVisualizerApp extends Application {
 
     private PanelVideoRecorder videoRecorder;
     private Scene mainScene;
+    private ExecutorService heatmapPreprocessExecutor;
+    private volatile boolean heatmapPreprocessInProgress;
 
     private static final String DARK_CSS = Objects.requireNonNull(
             FxVisualizerApp.class.getResource("/com/matsim/viz/ui/fx/theme.css"),
@@ -99,6 +107,11 @@ public final class FxVisualizerApp extends Application {
         runOnEdt(() -> networkPanel.setPreferredSize(new Dimension(1200, 800)));
         runOnEdt(() -> networkPanel.setSampleSize(startupSampleSize));
         applyStartupDefaults(networkPanel);
+        heatmapPreprocessExecutor = Executors.newSingleThreadExecutor(r -> {
+            Thread thread = new Thread(r, "heatmap-preprocess");
+            thread.setDaemon(true);
+            return thread;
+        });
 
         Path recordDir = startupCacheDir != null ? startupCacheDir : Path.of("cache");
         videoRecorder = new PanelVideoRecorder(recordDir);
@@ -134,8 +147,12 @@ public final class FxVisualizerApp extends Application {
             if (videoRecorder.isRecording()) {
                 try { videoRecorder.stop(); } catch (IOException ignored) { }
             }
+            if (heatmapPreprocessExecutor != null) {
+                heatmapPreprocessExecutor.shutdownNow();
+            }
             Platform.exit();
         });
+
     }
 
     private TopBarBundle buildTopBar(Stage owner, SimulationModel model, PlaybackController playbackController, NetworkPanel networkPanel) {
@@ -155,7 +172,7 @@ public final class FxVisualizerApp extends Application {
         timeCaption.getStyleClass().add("field-caption");
 
         Slider timeSlider = new Slider(playbackController.getStartTime(), playbackController.getEndTime(), playbackController.getCurrentTime());
-        timeSlider.setPrefWidth(460);
+        timeSlider.setPrefWidth(320);
         timeSlider.setBlockIncrement(1.0);
 
         Label timeValue = new Label(TimeFormat.hhmmss(playbackController.getCurrentTime()));
@@ -165,7 +182,7 @@ public final class FxVisualizerApp extends Application {
         speedCaption.getStyleClass().add("field-caption");
 
         Slider speedSlider = new Slider(1, 600, playbackController.getSpeedMultiplier());
-        speedSlider.setPrefWidth(220);
+        speedSlider.setPrefWidth(150);
         speedSlider.valueProperty().addListener((obs, oldValue, newValue) ->
                 playbackController.setSpeedMultiplier(newValue.doubleValue()));
 
@@ -173,14 +190,112 @@ public final class FxVisualizerApp extends Application {
         speedValue.getStyleClass().add("mono-value");
         speedSlider.valueProperty().addListener((obs, oldValue, newValue) -> speedValue.setText(formatSpeed(newValue.doubleValue())));
 
-        Label colorCaption = new Label("Color");
-        colorCaption.getStyleClass().add("field-caption");
+        Label windowCaption = new Label("Window");
+        windowCaption.getStyleClass().add("field-caption");
+        ComboBox<String> windowModeCombo = new ComboBox<>(FXCollections.observableArrayList("Windowed", "Fullscreen"));
+        windowModeCombo.setValue("Windowed");
+        windowModeCombo.setPrefWidth(125);
 
-        ComboBox<ColorMode> colorModeCombo = new ComboBox<>(FXCollections.observableArrayList(ColorMode.values()));
-        colorModeCombo.setValue(parseColorModeDefault());
-        colorModeCombo.valueProperty().addListener((obs, oldValue, newValue) -> {
-            if (newValue != null) {
-                runOnEdt(() -> networkPanel.setColorMode(newValue));
+        Label screenCaption = new Label("Screen");
+        screenCaption.getStyleClass().add("field-caption");
+        List<DisplayScreenOption> screenOptions = buildScreenOptions();
+        ComboBox<DisplayScreenOption> screenCombo = new ComboBox<>(FXCollections.observableArrayList(screenOptions));
+        screenCombo.setPrefWidth(170);
+        DisplayScreenOption initialScreen = closestScreenOption(screenOptions, owner);
+        if (initialScreen != null) {
+            screenCombo.setValue(initialScreen);
+        }
+
+        final boolean[] applyingWindowMode = {false};
+
+        final double[] windowedX = {Double.NaN};
+        final double[] windowedY = {Double.NaN};
+        final double[] windowedW = {Double.NaN};
+        final double[] windowedH = {Double.NaN};
+
+        Runnable captureWindowedBounds = () -> {
+            if (!owner.isMaximized() && !owner.isFullScreen()) {
+                windowedX[0] = owner.getX();
+                windowedY[0] = owner.getY();
+                windowedW[0] = owner.getWidth();
+                windowedH[0] = owner.getHeight();
+            }
+        };
+
+        windowModeCombo.valueProperty().addListener((obs, oldValue, newValue) -> {
+            if (newValue == null) {
+                return;
+            }
+            if (applyingWindowMode[0]) {
+                return;
+            }
+
+            applyingWindowMode[0] = true;
+            try {
+                if ("Fullscreen".equals(newValue)) {
+                    captureWindowedBounds.run();
+                    owner.setMaximized(false);
+
+                    DisplayScreenOption selectedScreen = screenCombo.getValue();
+                    Screen targetScreen = selectedScreen == null ? Screen.getPrimary() : selectedScreen.screen();
+                    moveStageToScreen(owner, targetScreen, true);
+
+                    owner.setFullScreen(true);
+                } else {
+                    owner.setFullScreen(false);
+                    owner.setMaximized(false);
+
+                    if (Double.isFinite(windowedW[0]) && Double.isFinite(windowedH[0])) {
+                        owner.setWidth(Math.max(owner.getMinWidth(), windowedW[0]));
+                        owner.setHeight(Math.max(owner.getMinHeight(), windowedH[0]));
+                    }
+                    if (Double.isFinite(windowedX[0]) && Double.isFinite(windowedY[0])) {
+                        owner.setX(windowedX[0]);
+                        owner.setY(windowedY[0]);
+                    }
+                }
+            } finally {
+                applyingWindowMode[0] = false;
+            }
+        });
+
+        screenCombo.valueProperty().addListener((obs, oldValue, newValue) -> {
+            if (newValue == null || applyingWindowMode[0]) {
+                return;
+            }
+
+            applyingWindowMode[0] = true;
+            try {
+                owner.setFullScreen(false);
+                owner.setMaximized(false);
+                moveStageToScreen(owner, newValue.screen(), false);
+                windowModeCombo.setValue("Windowed");
+            } finally {
+                applyingWindowMode[0] = false;
+            }
+        });
+
+        Runnable syncScreenSelection = () -> {
+            if (applyingWindowMode[0]) {
+                return;
+            }
+            DisplayScreenOption closest = closestScreenOption(screenOptions, owner);
+            if (closest != null) {
+                screenCombo.setValue(closest);
+            }
+        };
+        owner.xProperty().addListener((obs, oldValue, newValue) -> syncScreenSelection.run());
+        owner.yProperty().addListener((obs, oldValue, newValue) -> syncScreenSelection.run());
+
+        owner.fullScreenProperty().addListener((obs, wasFullScreen, isFullScreen) -> {
+            if (applyingWindowMode[0]) {
+                return;
+            }
+            applyingWindowMode[0] = true;
+            try {
+                windowModeCombo.setValue(isFullScreen ? "Fullscreen" : "Windowed");
+            } finally {
+                applyingWindowMode[0] = false;
             }
         });
 
@@ -255,8 +370,10 @@ public final class FxVisualizerApp extends Application {
                 speedCaption,
                 speedSlider,
                 speedValue,
-                colorCaption,
-                colorModeCombo,
+                windowCaption,
+                windowModeCombo,
+                screenCaption,
+                screenCombo,
                 spacer,
                 qualityCombo,
                 recordButton,
@@ -281,23 +398,118 @@ public final class FxVisualizerApp extends Application {
         content.getStyleClass().add("side-content");
         content.setPadding(new Insets(12));
 
-        content.getChildren().add(buildModeSelectionCard(
+        VBox visualizationCard = createCard("Visualization");
+        ComboBox<NetworkPanel.VisualizationMode> visualizationModeCombo = new ComboBox<>(
+            FXCollections.observableArrayList(NetworkPanel.VisualizationMode.values())
+        );
+        visualizationModeCombo.setMaxWidth(Double.MAX_VALUE);
+        visualizationModeCombo.setValue(getOnEdt(networkPanel::getVisualizationMode));
+        visualizationModeCombo.valueProperty().addListener((obs, oldValue, newValue) -> {
+            if (newValue != null) {
+                runOnEdt(() -> networkPanel.setVisualizationMode(newValue));
+            }
+        });
+        visualizationCard.getChildren().add(visualizationModeCombo);
+
+        TitledPane networkModesCard = buildModeSelectionCard(
                 "Network Modes",
                 model.availableLinkModes(),
             defaultTransportModes(model.availableLinkModes()),
                 selected -> runOnEdt(() -> networkPanel.setSelectedLinkModes(selected))
-        ));
+        );
 
-        content.getChildren().add(buildModeSelectionCard(
+        TitledPane tripModesCard = buildModeSelectionCard(
                 "Trip Modes",
                 model.availableTripModes(),
             defaultTransportModes(model.availableTripModes()),
                 selected -> runOnEdt(() -> networkPanel.setSelectedTripModes(selected))
-        ));
+        );
 
-        content.getChildren().add(buildDisplaySettingsCard(owner, model, networkPanel));
-        content.getChildren().add(buildAppearanceCard(owner, networkPanel));
-        content.getChildren().add(buildBottleneckCard(networkPanel));
+        TitledPane heatmapTripModesCard = buildModeSelectionCard(
+            "Heatmap Shown Modes",
+            model.availableTripModes(),
+            defaultTransportModes(model.availableTripModes()),
+            selected -> runOnEdt(() -> networkPanel.setSelectedHeatmapTripModes(selected))
+        );
+
+        Button preprocessButton = new Button("Apply Bin + Preprocess");
+        preprocessButton.getStyleClass().add("accent-button");
+        preprocessButton.setMaxWidth(Double.MAX_VALUE);
+        VBox heatmapSettingsCard = buildHeatmapSettingsCard(networkPanel, preprocessButton);
+
+        CheckBox separateNetworkModesToggle = new CheckBox("Allow separate network mode filter");
+        separateNetworkModesToggle.setSelected(getOnEdt(networkPanel::isUseSeparateHeatmapNetworkModes));
+        separateNetworkModesToggle.setOnAction(e -> runOnEdt(() ->
+            networkPanel.setUseSeparateHeatmapNetworkModes(separateNetworkModesToggle.isSelected())
+        ));
+        heatmapSettingsCard.getChildren().add(separateNetworkModesToggle);
+
+        VBox flowHeatmapColorsCard = buildHeatmapColorsCard(
+            "Flow Color Map",
+            NetworkPanel.VisualizationMode.FLOW_HEATMAP,
+            networkPanel
+        );
+        VBox speedHeatmapColorsCard = buildHeatmapColorsCard(
+            "Speed Color Map",
+            NetworkPanel.VisualizationMode.SPEED_HEATMAP,
+            networkPanel
+        );
+        VBox speedRatioHeatmapColorsCard = buildHeatmapColorsCard(
+            "Speed Ratio Color Map",
+            NetworkPanel.VisualizationMode.SPEED_RATIO_HEATMAP,
+            networkPanel
+        );
+
+        VBox displaySettingsCard = buildDisplaySettingsCard(owner, model, networkPanel);
+        VBox appearanceCard = buildAppearanceCard(owner, networkPanel);
+        VBox bottleneckCard = buildBottleneckCard(networkPanel);
+
+        content.getChildren().addAll(
+            visualizationCard,
+            networkModesCard,
+            tripModesCard,
+            heatmapTripModesCard,
+            heatmapSettingsCard,
+            flowHeatmapColorsCard,
+            speedHeatmapColorsCard,
+            speedRatioHeatmapColorsCard,
+            displaySettingsCard,
+            appearanceCard,
+            bottleneckCard
+        );
+
+        Runnable refreshModePanels = () -> {
+            NetworkPanel.VisualizationMode mode = visualizationModeCombo.getValue();
+            if (mode == null) {
+            mode = NetworkPanel.VisualizationMode.VEHICLES;
+            }
+
+            boolean vehicleMode = mode == NetworkPanel.VisualizationMode.VEHICLES;
+            boolean flowMode = mode == NetworkPanel.VisualizationMode.FLOW_HEATMAP
+                    || mode == NetworkPanel.VisualizationMode.PT_FLOW_HEATMAP;
+            boolean speedMode = mode == NetworkPanel.VisualizationMode.SPEED_HEATMAP;
+            boolean speedRatioMode = mode == NetworkPanel.VisualizationMode.SPEED_RATIO_HEATMAP;
+            boolean allowSeparateNetworkModes = separateNetworkModesToggle.isSelected();
+
+            setVisibleManaged(networkModesCard, vehicleMode || allowSeparateNetworkModes);
+            setVisibleManaged(tripModesCard, vehicleMode);
+            setVisibleManaged(displaySettingsCard, vehicleMode);
+            setVisibleManaged(bottleneckCard, vehicleMode);
+
+            setVisibleManaged(heatmapTripModesCard, !vehicleMode);
+            setVisibleManaged(heatmapSettingsCard, !vehicleMode);
+            setVisibleManaged(flowHeatmapColorsCard, flowMode);
+            setVisibleManaged(speedHeatmapColorsCard, speedMode);
+            setVisibleManaged(speedRatioHeatmapColorsCard, speedRatioMode);
+
+            boolean heatmapMode = !vehicleMode;
+            preprocessButton.setDisable(!heatmapMode || heatmapPreprocessInProgress);
+            preprocessButton.setText(heatmapPreprocessInProgress ? "Preprocessing..." : "Apply Bin + Preprocess");
+        };
+
+        visualizationModeCombo.valueProperty().addListener((obs, oldValue, newValue) -> refreshModePanels.run());
+        separateNetworkModesToggle.selectedProperty().addListener((obs, oldValue, newValue) -> refreshModePanels.run());
+        refreshModePanels.run();
 
         ScrollPane scrollPane = new ScrollPane(content);
         scrollPane.getStyleClass().add("side-scroll");
@@ -310,6 +522,18 @@ public final class FxVisualizerApp extends Application {
 
     private VBox buildDisplaySettingsCard(Stage owner, SimulationModel model, NetworkPanel networkPanel) {
         VBox card = createCard("Display Settings");
+
+        Label colorCaption = new Label("Vehicle Coloring");
+        colorCaption.getStyleClass().add("field-caption");
+
+        ComboBox<ColorMode> colorModeCombo = new ComboBox<>(FXCollections.observableArrayList(ColorMode.values()));
+        colorModeCombo.setMaxWidth(Double.MAX_VALUE);
+        colorModeCombo.setValue(parseColorModeDefault());
+        colorModeCombo.valueProperty().addListener((obs, oldValue, newValue) -> {
+            if (newValue != null) {
+                runOnEdt(() -> networkPanel.setColorMode(newValue));
+            }
+        });
 
         CheckBox queueToggle = new CheckBox("Show Link Queues");
         queueToggle.setSelected(false);
@@ -340,7 +564,121 @@ public final class FxVisualizerApp extends Application {
             colorSettingsWindow[0].toFront();
         });
 
-        card.getChildren().addAll(queueToggle, offsetCaption, offsetSlider, offsetValue, colorSettingsButton);
+        card.getChildren().addAll(
+            colorCaption,
+            colorModeCombo,
+            queueToggle,
+            offsetCaption,
+            offsetSlider,
+            offsetValue,
+            colorSettingsButton
+        );
+        return card;
+    }
+
+    private VBox buildHeatmapSettingsCard(NetworkPanel networkPanel, Button preprocessButton) {
+        VBox card = createCard("Heatmap Aggregation");
+
+        Label binCaption = new Label("Time Bin (minutes)");
+        binCaption.getStyleClass().add("field-caption");
+
+        int currentBinSeconds = getOnEdt(networkPanel::getHeatmapTimeBinSeconds);
+        Slider binSlider = new Slider(1, 120, Math.max(1, currentBinSeconds / 60.0));
+        Label binValue = new Label(String.format(Locale.ROOT, "%.1f min", binSlider.getValue()));
+        binValue.getStyleClass().add("mono-value");
+        TextField binInput = new TextField(String.format(Locale.ROOT, "%.1f", binSlider.getValue()));
+        binInput.setPrefWidth(74);
+        Label binInputUnit = new Label("min");
+        HBox binInputRow = new HBox(6, binInput, binInputUnit);
+        binInputRow.setAlignment(Pos.CENTER_LEFT);
+
+        Label stagedHint = new Label("Move slider, then click Preprocess Heatmaps to apply.");
+        stagedHint.getStyleClass().add("hint");
+        stagedHint.setWrapText(true);
+
+        Runnable syncInputToSlider = () -> {
+            try {
+                double minutes = Double.parseDouble(binInput.getText().trim());
+                double clamped = Math.max(binSlider.getMin(), Math.min(binSlider.getMax(), minutes));
+                binSlider.setValue(clamped);
+            } catch (NumberFormatException ignored) {
+                binInput.setText(String.format(Locale.ROOT, "%.1f", binSlider.getValue()));
+            }
+        };
+
+        binSlider.valueProperty().addListener((obs, oldValue, newValue) -> {
+            double minutes = newValue.doubleValue();
+            binValue.setText(String.format(Locale.ROOT, "%.1f min", minutes));
+            binInput.setText(String.format(Locale.ROOT, "%.1f", minutes));
+        });
+
+        binInput.setOnAction(e -> syncInputToSlider.run());
+        binInput.focusedProperty().addListener((obs, oldValue, focused) -> {
+            if (!focused) {
+                syncInputToSlider.run();
+            }
+        });
+
+        preprocessButton.setOnAction(e -> {
+            int seconds = (int) Math.round(binSlider.getValue() * 60.0);
+            runOnEdt(() -> networkPanel.setHeatmapTimeBinSeconds(seconds));
+            requestHeatmapPreprocessing(networkPanel, true);
+        });
+
+        Label hint = new Label("Default is 10 minutes. Higher values smooth out short-term spikes.");
+        hint.getStyleClass().add("hint");
+        hint.setWrapText(true);
+
+        card.getChildren().addAll(binCaption, binSlider, binInputRow, binValue, stagedHint, preprocessButton, hint);
+        return card;
+    }
+
+    private VBox buildHeatmapColorsCard(
+            String title,
+            NetworkPanel.VisualizationMode paletteMode,
+            NetworkPanel networkPanel
+    ) {
+        VBox card = createCard(title);
+
+        Label lowCaption = new Label("Low value color");
+        lowCaption.getStyleClass().add("field-caption");
+        ColorPicker lowPicker = new ColorPicker(toFx(getOnEdt(() ->
+                switch (paletteMode) {
+                    case FLOW_HEATMAP, PT_FLOW_HEATMAP -> networkPanel.getFlowHeatmapLowColor();
+                    case SPEED_RATIO_HEATMAP -> networkPanel.getSpeedRatioHeatmapLowColor();
+                    default -> networkPanel.getSpeedHeatmapLowColor();
+                }
+        )));
+        lowPicker.setMaxWidth(Double.MAX_VALUE);
+
+        Label highCaption = new Label("High value color");
+        highCaption.getStyleClass().add("field-caption");
+        ColorPicker highPicker = new ColorPicker(toFx(getOnEdt(() ->
+                switch (paletteMode) {
+                    case FLOW_HEATMAP, PT_FLOW_HEATMAP -> networkPanel.getFlowHeatmapHighColor();
+                    case SPEED_RATIO_HEATMAP -> networkPanel.getSpeedRatioHeatmapHighColor();
+                    default -> networkPanel.getSpeedHeatmapHighColor();
+                }
+        )));
+        highPicker.setMaxWidth(Double.MAX_VALUE);
+
+        lowPicker.setOnAction(e -> runOnEdt(() -> {
+            switch (paletteMode) {
+                case FLOW_HEATMAP, PT_FLOW_HEATMAP -> networkPanel.setFlowHeatmapLowColor(toAwt(lowPicker.getValue()));
+                case SPEED_RATIO_HEATMAP -> networkPanel.setSpeedRatioHeatmapLowColor(toAwt(lowPicker.getValue()));
+                default -> networkPanel.setSpeedHeatmapLowColor(toAwt(lowPicker.getValue()));
+            }
+        }));
+
+        highPicker.setOnAction(e -> runOnEdt(() -> {
+            switch (paletteMode) {
+                case FLOW_HEATMAP, PT_FLOW_HEATMAP -> networkPanel.setFlowHeatmapHighColor(toAwt(highPicker.getValue()));
+                case SPEED_RATIO_HEATMAP -> networkPanel.setSpeedRatioHeatmapHighColor(toAwt(highPicker.getValue()));
+                default -> networkPanel.setSpeedHeatmapHighColor(toAwt(highPicker.getValue()));
+            }
+        }));
+
+        card.getChildren().addAll(lowCaption, lowPicker, highCaption, highPicker);
         return card;
     }
 
@@ -619,6 +957,11 @@ public final class FxVisualizerApp extends Application {
         return window;
     }
 
+    private static void setVisibleManaged(Node node, boolean visible) {
+        node.setVisible(visible);
+        node.setManaged(visible);
+    }
+
     private TitledPane buildModeSelectionCard(
             String title,
             List<String> modes,
@@ -818,10 +1161,18 @@ public final class FxVisualizerApp extends Application {
         runOnEdt(() -> {
             networkPanel.setDarkTheme(config.uiDarkTheme());
             networkPanel.setColorMode(parseColorModeDefault());
+            networkPanel.setVisualizationMode(parseVisualizationMode(config.uiVisualizationMode(), NetworkPanel.VisualizationMode.VEHICLES));
             networkPanel.setShowQueues(config.uiShowQueues());
             networkPanel.setBidirectionalOffset(config.uiBidirectionalOffset());
             networkPanel.setShowBottleneck(config.uiShowBottleneck());
             networkPanel.setBottleneckDivisor(config.uiBottleneckDivisor());
+            networkPanel.setHeatmapTimeBinSeconds(config.uiHeatmapTimeBinSeconds());
+            networkPanel.setFlowHeatmapLowColor(parseHexColor(config.uiFlowColorLow(), networkPanel.getFlowHeatmapLowColor()));
+            networkPanel.setFlowHeatmapHighColor(parseHexColor(config.uiFlowColorHigh(), networkPanel.getFlowHeatmapHighColor()));
+            networkPanel.setSpeedHeatmapLowColor(parseHexColor(config.uiSpeedColorLow(), networkPanel.getSpeedHeatmapLowColor()));
+            networkPanel.setSpeedHeatmapHighColor(parseHexColor(config.uiSpeedColorHigh(), networkPanel.getSpeedHeatmapHighColor()));
+            networkPanel.setSpeedRatioHeatmapLowColor(parseHexColor(config.uiSpeedRatioColorLow(), networkPanel.getSpeedRatioHeatmapLowColor()));
+            networkPanel.setSpeedRatioHeatmapHighColor(parseHexColor(config.uiSpeedRatioColorHigh(), networkPanel.getSpeedRatioHeatmapHighColor()));
             networkPanel.setKeepVehiclesVisibleWhenZoomedOut(config.uiKeepVehiclesVisibleWhenZoomedOut());
             networkPanel.setMinVehicleLengthPixels(config.uiMinVehicleLengthPixels());
             networkPanel.setMinVehicleWidthPixels(config.uiMinVehicleWidthPixels());
@@ -895,6 +1246,117 @@ public final class FxVisualizerApp extends Application {
         }
     }
 
+    private static List<DisplayScreenOption> buildScreenOptions() {
+        List<DisplayScreenOption> options = new ArrayList<>();
+        List<Screen> screens = Screen.getScreens();
+        for (int i = 0; i < screens.size(); i++) {
+            Screen screen = screens.get(i);
+            Rectangle2D bounds = screen.getVisualBounds();
+            String label = "Screen " + (i + 1) + " (" + (int) bounds.getWidth() + "x" + (int) bounds.getHeight() + ")";
+            options.add(new DisplayScreenOption(label, screen));
+        }
+        return options;
+    }
+
+    private static DisplayScreenOption closestScreenOption(List<DisplayScreenOption> options, Stage stage) {
+        if (options.isEmpty()) {
+            return null;
+        }
+
+        double centerX = stage.getX() + Math.max(1.0, stage.getWidth()) * 0.5;
+        double centerY = stage.getY() + Math.max(1.0, stage.getHeight()) * 0.5;
+        List<Screen> candidates = Screen.getScreensForRectangle(centerX, centerY, 1, 1);
+        Screen screen = candidates.isEmpty() ? Screen.getPrimary() : candidates.get(0);
+
+        for (DisplayScreenOption option : options) {
+            if (option.screen().equals(screen)) {
+                return option;
+            }
+        }
+        return options.getFirst();
+    }
+
+    private static void moveStageToScreen(Stage stage, Screen screen, boolean preserveSize) {
+        Rectangle2D bounds = screen.getVisualBounds();
+        double targetWidth;
+        double targetHeight;
+        if (preserveSize) {
+            targetWidth = Math.min(Math.max(stage.getMinWidth(), stage.getWidth()), bounds.getWidth());
+            targetHeight = Math.min(Math.max(stage.getMinHeight(), stage.getHeight()), bounds.getHeight());
+            stage.setWidth(targetWidth);
+            stage.setHeight(targetHeight);
+        } else {
+            targetWidth = Math.min(Math.max(stage.getMinWidth(), bounds.getWidth() * 0.86), bounds.getWidth());
+            targetHeight = Math.min(Math.max(stage.getMinHeight(), bounds.getHeight() * 0.86), bounds.getHeight());
+            stage.setWidth(targetWidth);
+            stage.setHeight(targetHeight);
+        }
+
+        double x = bounds.getMinX() + (bounds.getWidth() - targetWidth) * 0.5;
+        double y = bounds.getMinY() + (bounds.getHeight() - targetHeight) * 0.5;
+        stage.setX(x);
+        stage.setY(y);
+    }
+
+    private void requestHeatmapPreprocessing(NetworkPanel networkPanel, boolean force) {
+        if (heatmapPreprocessInProgress) {
+            return;
+        }
+        boolean alreadyPrepared = getOnEdt(networkPanel::isHeatmapPreparedForCurrentSettings);
+        if (!force && alreadyPrepared) {
+            return;
+        }
+
+        heatmapPreprocessInProgress = true;
+        runOnEdt(networkPanel::markHeatmapPreprocessingStarted);
+
+        CompletableFuture.runAsync(() -> {
+            networkPanel.preprocessHeatmapsForCurrentSettings();
+        }, heatmapPreprocessExecutor).whenComplete((ignored, error) -> Platform.runLater(() -> {
+            runOnEdt(networkPanel::markHeatmapPreprocessingFinished);
+            heatmapPreprocessInProgress = false;
+
+            if (error != null) {
+                Alert alert = new Alert(Alert.AlertType.ERROR, error.getMessage());
+                alert.setHeaderText("Heatmap preprocessing failed");
+                alert.showAndWait();
+            }
+        }));
+    }
+
+    private static NetworkPanel.VisualizationMode parseVisualizationMode(
+            String raw,
+            NetworkPanel.VisualizationMode fallback
+    ) {
+        if (raw == null || raw.isBlank()) {
+            return fallback;
+        }
+        try {
+            return NetworkPanel.VisualizationMode.valueOf(raw.trim().toUpperCase());
+        } catch (IllegalArgumentException ex) {
+            return fallback;
+        }
+    }
+
+    private static java.awt.Color parseHexColor(String raw, java.awt.Color fallback) {
+        if (raw == null || raw.isBlank()) {
+            return fallback;
+        }
+        String value = raw.trim();
+        if (value.startsWith("#")) {
+            value = value.substring(1);
+        }
+        if (value.length() != 6) {
+            return fallback;
+        }
+        try {
+            int rgb = Integer.parseInt(value, 16);
+            return new java.awt.Color(rgb);
+        } catch (NumberFormatException ex) {
+            return fallback;
+        }
+    }
+
     private AnimationTimer createAnimationTimer(PlaybackController playbackController, NetworkPanel networkPanel, PlaybackUiState uiState) {
         return new AnimationTimer() {
             private long previousNanos = -1L;
@@ -903,6 +1365,12 @@ public final class FxVisualizerApp extends Application {
             public void handle(long now) {
                 if (previousNanos < 0) {
                     previousNanos = now;
+                    return;
+                }
+
+                if (heatmapPreprocessInProgress) {
+                    previousNanos = now;
+                    runOnEdt(networkPanel::repaint);
                     return;
                 }
 
@@ -1061,5 +1529,12 @@ public final class FxVisualizerApp extends Application {
     }
 
     private record PlaybackUiState(Button playPauseButton, Slider timeSlider, Label timeValue, boolean[] syncing) {
+    }
+
+    private record DisplayScreenOption(String label, Screen screen) {
+        @Override
+        public String toString() {
+            return label;
+        }
     }
 }
