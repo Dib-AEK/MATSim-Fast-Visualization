@@ -21,9 +21,11 @@ public final class SimulationModel {
     private final Map<String, List<TripPurposeWindow>> tripPurposeWindowsByPerson;
 
     private final String[] traversalVehicleIds;
+    private final String[] traversalTripModes;
     private final String[] traversalLinkIds;
     private final double[] traversalEnterTimes;
     private final double[] traversalLeaveTimes;
+    private final double[] traversalInverseDurations;
 
     private final double[] transitionTimes;
     private final int[] transitionTraversalIndexes;
@@ -54,16 +56,21 @@ public final class SimulationModel {
 
         int count = traversals == null ? 0 : traversals.length;
         this.traversalVehicleIds = new String[count];
+        this.traversalTripModes = new String[count];
         this.traversalLinkIds = new String[count];
         this.traversalEnterTimes = new double[count];
         this.traversalLeaveTimes = new double[count];
+        this.traversalInverseDurations = new double[count];
 
         for (int i = 0; i < count; i++) {
             VehicleTraversal traversal = traversals[i];
             this.traversalVehicleIds[i] = traversal.vehicleId();
+            this.traversalTripModes[i] = normalizeMode(vehicleToMode.get(this.traversalVehicleIds[i]));
             this.traversalLinkIds[i] = traversal.linkId();
             this.traversalEnterTimes[i] = traversal.enterTimeSeconds();
             this.traversalLeaveTimes[i] = traversal.leaveTimeSeconds();
+            double duration = Math.max(0.05, this.traversalLeaveTimes[i] - this.traversalEnterTimes[i]);
+            this.traversalInverseDurations[i] = 1.0 / duration;
         }
 
         TransitionArrays transitionArrays = buildTransitionArrays();
@@ -137,6 +144,10 @@ public final class SimulationModel {
         return traversalVehicleIds[index];
     }
 
+    public String traversalTripMode(int index) {
+        return traversalTripModes[index];
+    }
+
     public String traversalLinkId(int index) {
         return traversalLinkIds[index];
     }
@@ -147,6 +158,10 @@ public final class SimulationModel {
 
     public double traversalLeaveTime(int index) {
         return traversalLeaveTimes[index];
+    }
+
+    public double traversalInverseDuration(int index) {
+        return traversalInverseDurations[index];
     }
 
     public int transitionCount() {
@@ -446,6 +461,13 @@ public final class SimulationModel {
             return "unknown";
         }
         return value;
+    }
+
+    private static String normalizeMode(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return "";
+        }
+        return raw.toLowerCase(Locale.ROOT);
     }
 
     private static int sexSortKey(String value) {

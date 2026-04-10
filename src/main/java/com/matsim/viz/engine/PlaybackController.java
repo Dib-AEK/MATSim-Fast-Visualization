@@ -12,8 +12,10 @@ public final class PlaybackController {
     private final SimulationModel model;
     private final double startTime;
     private final double endTime;
+    private final Object stateLock = new Object();
 
     private final Set<Integer> activeTraversalIndexes = new HashSet<>();
+    private final Map<String, List<Integer>> activeTraversalIndexesByLink = new HashMap<>();
     private final Map<String, Integer> linkQueueCounts = new HashMap<>();
     private final List<PlaybackListener> listeners = new ArrayList<>();
 
@@ -32,28 +34,34 @@ public final class PlaybackController {
     }
 
     public void tick(double deltaSeconds) {
-        if (!playing) {
-            return;
-        }
+        synchronized (stateLock) {
+            if (!playing) {
+                return;
+            }
 
-        double previousTime = currentTime;
-        currentTime = Math.min(endTime, currentTime + deltaSeconds * speedMultiplier);
-        applyTransitionsForward(previousTime, currentTime);
+            double previousTime = currentTime;
+            currentTime = Math.min(endTime, currentTime + deltaSeconds * speedMultiplier);
+            applyTransitionsForward(previousTime, currentTime);
 
-        if (currentTime >= endTime) {
-            playing = false;
+            if (currentTime >= endTime) {
+                playing = false;
+            }
         }
         notifyListeners();
     }
 
     public void seek(double targetTime) {
-        currentTime = Math.max(startTime, Math.min(endTime, targetTime));
-        rebuildStateAt(currentTime);
+        synchronized (stateLock) {
+            currentTime = Math.max(startTime, Math.min(endTime, targetTime));
+            rebuildStateAt(currentTime);
+        }
         notifyListeners();
     }
 
     public void setPlaying(boolean playing) {
-        this.playing = playing;
+        synchronized (stateLock) {
+            this.playing = playing;
+        }
         notifyListeners();
     }
 
@@ -62,19 +70,27 @@ public final class PlaybackController {
     }
 
     public boolean isPlaying() {
-        return playing;
+        synchronized (stateLock) {
+            return playing;
+        }
     }
 
     public void setSpeedMultiplier(double speedMultiplier) {
-        this.speedMultiplier = Math.max(0.1, speedMultiplier);
+        synchronized (stateLock) {
+            this.speedMultiplier = Math.max(0.1, speedMultiplier);
+        }
     }
 
     public double getSpeedMultiplier() {
-        return speedMultiplier;
+        synchronized (stateLock) {
+            return speedMultiplier;
+        }
     }
 
     public double getCurrentTime() {
-        return currentTime;
+        synchronized (stateLock) {
+            return currentTime;
+        }
     }
 
     public double getStartTime() {
@@ -86,19 +102,53 @@ public final class PlaybackController {
     }
 
     public Set<Integer> getActiveTraversalIndexes() {
-        return Collections.unmodifiableSet(activeTraversalIndexes);
+        synchronized (stateLock) {
+            return Collections.unmodifiableSet(new HashSet<>(activeTraversalIndexes));
+        }
     }
 
     public int getQueueCountForLink(String linkId) {
-        return linkQueueCounts.getOrDefault(linkId, 0);
+        synchronized (stateLock) {
+            return linkQueueCounts.getOrDefault(linkId, 0);
+        }
+    }
+
+    public List<Integer> getActiveTraversalIndexesForLink(String linkId) {
+        synchronized (stateLock) {
+            List<Integer> traversals = activeTraversalIndexesByLink.get(linkId);
+            return traversals == null ? List.of() : List.copyOf(traversals);
+        }
     }
 
     public Map<String, Integer> getLinkQueueCountsView() {
-        return Collections.unmodifiableMap(linkQueueCounts);
+        synchronized (stateLock) {
+            return Collections.unmodifiableMap(new HashMap<>(linkQueueCounts));
+        }
+    }
+
+    public Map<String, LinkFrameSnapshot> snapshotLinkState(Set<String> linkIds) {
+        Map<String, LinkFrameSnapshot> snapshot = new HashMap<>();
+        synchronized (stateLock) {
+            for (String linkId : linkIds) {
+                List<Integer> traversals = activeTraversalIndexesByLink.get(linkId);
+                int queueCount = linkQueueCounts.getOrDefault(linkId, 0);
+                if ((traversals == null || traversals.isEmpty()) && queueCount <= 0) {
+                    continue;
+                }
+
+                int[] traversalIndexes = traversals == null
+                        ? new int[0]
+                        : copyTraversalIndexes(traversals);
+                snapshot.put(linkId, new LinkFrameSnapshot(traversalIndexes, queueCount));
+            }
+        }
+        return snapshot;
     }
 
     public void addListener(PlaybackListener listener) {
-        listeners.add(listener);
+        synchronized (listeners) {
+            listeners.add(listener);
+        }
     }
 
     private void applyTransitionsForward(double fromTime, double toTime) {
@@ -113,17 +163,11 @@ public final class PlaybackController {
             }
             nextTransitionIndex++;
         }
-
-        // Keep active set consistent in case of tiny time jumps around boundaries.
-        activeTraversalIndexes.removeIf(index -> {
-            double leave = model.traversalLeaveTime(index);
-            double enter = model.traversalEnterTime(index);
-            return leave <= currentTime || enter > currentTime;
-        });
     }
 
     private void rebuildStateAt(double time) {
         activeTraversalIndexes.clear();
+        activeTraversalIndexesByLink.clear();
         linkQueueCounts.clear();
         nextTransitionIndex = 0;
 
@@ -136,12 +180,6 @@ public final class PlaybackController {
             applyTransition(nextTransitionIndex);
             nextTransitionIndex++;
         }
-
-        activeTraversalIndexes.removeIf(index -> {
-            double leave = model.traversalLeaveTime(index);
-            double enter = model.traversalEnterTime(index);
-            return leave <= time || enter > time;
-        });
     }
 
     private void applyTransition(int transitionIndex) {
@@ -151,9 +189,17 @@ public final class PlaybackController {
 
         if (enter) {
             activeTraversalIndexes.add(traversalIndex);
+            activeTraversalIndexesByLink.computeIfAbsent(linkId, key -> new ArrayList<>()).add(traversalIndex);
             linkQueueCounts.merge(linkId, 1, Integer::sum);
         } else {
             activeTraversalIndexes.remove(traversalIndex);
+            List<Integer> linkTraversals = activeTraversalIndexesByLink.get(linkId);
+            if (linkTraversals != null) {
+                linkTraversals.removeIf(index -> index == traversalIndex);
+                if (linkTraversals.isEmpty()) {
+                    activeTraversalIndexesByLink.remove(linkId);
+                }
+            }
             linkQueueCounts.compute(linkId, (k, value) -> {
                 if (value == null || value <= 1) {
                     return null;
@@ -164,8 +210,23 @@ public final class PlaybackController {
     }
 
     private void notifyListeners() {
-        for (PlaybackListener listener : listeners) {
+        List<PlaybackListener> snapshot;
+        synchronized (listeners) {
+            snapshot = List.copyOf(listeners);
+        }
+        for (PlaybackListener listener : snapshot) {
             listener.onPlaybackUpdated();
         }
+    }
+
+    private static int[] copyTraversalIndexes(List<Integer> traversals) {
+        int[] copied = new int[traversals.size()];
+        for (int i = 0; i < traversals.size(); i++) {
+            copied[i] = traversals.get(i);
+        }
+        return copied;
+    }
+
+    public record LinkFrameSnapshot(int[] traversalIndexes, int queueCount) {
     }
 }

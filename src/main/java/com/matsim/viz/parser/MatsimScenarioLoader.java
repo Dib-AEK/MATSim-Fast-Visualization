@@ -25,8 +25,8 @@ public final class MatsimScenarioLoader {
         Config matsimConfig = ConfigUtils.loadConfig(matsimConfigPath.toString());
         Path networkFile = resolveConfigInputPath(matsimConfigPath, matsimConfig.network().getInputFile(), "network.inputFile");
         Path populationFile = resolveConfigInputPath(matsimConfigPath, matsimConfig.plans().getInputFile(), "plans.inputFile");
-        Path eventsFile = resolveEventsFile(appConfig, matsimConfigPath, matsimConfig);
-        Path tripsFile = resolveTripsFile(appConfig, matsimConfigPath, matsimConfig);
+        Path eventsFile = resolveEventsFile(matsimConfigPath, matsimConfig);
+        Path tripsFile = resolveTripsFile(matsimConfigPath, matsimConfig);
         Path outputPersonsFile = resolveOutputPersonsFile(matsimConfigPath, matsimConfig);
         Path outputPlansFile = resolveOutputPlansFile(matsimConfigPath, matsimConfig);
         Path transitScheduleFile = resolveTransitScheduleFile(matsimConfigPath, matsimConfig);
@@ -99,22 +99,7 @@ public final class MatsimScenarioLoader {
         return second;
     }
 
-    private static Path resolveEventsFile(AppConfig appConfig, Path matsimConfigPath, Config matsimConfig) {
-        if (appConfig.explicitEventsFile() != null && !appConfig.explicitEventsFile().isBlank()) {
-            Path explicit = Path.of(appConfig.explicitEventsFile());
-            if (explicit.isAbsolute()) {
-                if (Files.exists(explicit)) {
-                    return explicit;
-                }
-            } else {
-                Path outputDir = outputDirectory(matsimConfigPath, matsimConfig);
-                Path combined = outputDir.resolve(explicit);
-                if (Files.exists(combined)) {
-                    return combined;
-                }
-            }
-        }
-
+    private static Path resolveEventsFile(Path matsimConfigPath, Config matsimConfig) {
         Path outputDir = outputDirectory(matsimConfigPath, matsimConfig);
         String runId = matsimConfig.controller().getRunId();
 
@@ -135,18 +120,9 @@ public final class MatsimScenarioLoader {
         throw new IllegalArgumentException("Could not locate events file from MATSim config output directory. Tried: " + candidates);
     }
 
-    private static Path resolveTripsFile(AppConfig appConfig, Path matsimConfigPath, Config matsimConfig) {
+    private static Path resolveTripsFile(Path matsimConfigPath, Config matsimConfig) {
         Path outputDir = outputDirectory(matsimConfigPath, matsimConfig);
         String runId = matsimConfig.controller().getRunId();
-
-        if (appConfig.explicitTripsFile() != null && !appConfig.explicitTripsFile().isBlank()) {
-            Path explicit = Path.of(appConfig.explicitTripsFile());
-            Path candidate = explicit.isAbsolute() ? explicit : outputDir.resolve(explicit);
-            if (Files.exists(candidate)) {
-                return candidate;
-            }
-            throw new IllegalArgumentException("Configured trips.file not found: " + candidate);
-        }
 
         List<Path> candidates = new ArrayList<>();
         candidates.add(outputDir.resolve("output_trips.csv.gz"));

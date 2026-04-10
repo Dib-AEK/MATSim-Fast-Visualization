@@ -14,9 +14,9 @@ import java.awt.Dimension;
 import java.awt.Font;
 import java.awt.FontMetrics;
 import java.awt.Graphics;
+import java.awt.GraphicsConfiguration;
 import java.awt.Graphics2D;
 import java.awt.Point;
-import java.awt.Polygon;
 import java.awt.RenderingHints;
 import java.awt.event.ComponentAdapter;
 import java.awt.event.ComponentEvent;
@@ -28,15 +28,23 @@ import java.awt.geom.Point2D;
 import java.awt.geom.Rectangle2D;
 import java.awt.image.BufferedImage;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
+import java.util.stream.Stream;
 
 public final class NetworkPanel extends JPanel {
+    private static final int PARALLEL_MIN_VISIBLE_LINKS = 200;
+    private static final int PARALLEL_MIN_ACTIVE_TRAVERSALS = 8_000;
+    private static final int MAX_SORTED_TRAVERSALS_PER_GROUP = 512;
+    private static final long PAN_CACHE_REFRESH_NANOS = 120_000_000L;
+    private static final double PAN_CACHE_MAX_DRIFT_RATIO = 0.35;
+    private static final int VIEWPORT_WORLD_PADDING_PX = 48;
+
     private static final double DEFAULT_CAR_LIKE_LENGTH_METERS = 7.0;
     private static final double DEFAULT_BIKE_LENGTH_METERS = 3.0;
     private static final double DEFAULT_TRUCK_LENGTH_METERS = 10.0;
@@ -60,8 +68,10 @@ public final class NetworkPanel extends JPanel {
     private final SimulationModel model;
     private final PlaybackController playbackController;
     private final VehicleColorProvider colorProvider = new VehicleColorProvider();
+    private final SpatialGrid spatialGrid;
     private final Set<String> selectedLinkModes = new HashSet<>();
     private final Set<String> selectedTripModes = new HashSet<>();
+    private final Set<String> visibleLinkIds = new HashSet<>();
     private final Map<String, LinkScreenGeometry> linkScreenGeometries = new HashMap<>();
 
     private ColorMode colorMode = ColorMode.DEFAULT;
@@ -90,8 +100,8 @@ public final class NetworkPanel extends JPanel {
     private VehicleShape busShape = VehicleShape.OVAL;
     private VehicleShape railShape = VehicleShape.ARROW;
     private boolean keepVehiclesVisibleWhenZoomedOut = true;
-    private double minVehicleLengthPixels = 2.5;
-    private double minVehicleWidthPixels = 1.2;
+    private double minVehicleLengthPixels = 3.5;
+    private double minVehicleWidthPixels = 1.7;
 
     private double zoom = 1.0;
     private double panX = 20.0;
@@ -105,12 +115,14 @@ public final class NetworkPanel extends JPanel {
     private double cachedPanY = Double.NaN;
     private int cachedWidth = -1;
     private int cachedHeight = -1;
+    private long lastNetworkRenderNanos;
 
     private Point dragStart;
 
     public NetworkPanel(SimulationModel model, PlaybackController playbackController) {
         this.model = model;
         this.playbackController = playbackController;
+        this.spatialGrid = SpatialGrid.build(model.networkData());
         setBackground(mapBackground);
         setPreferredSize(new Dimension(1200, 800));
         selectedLinkModes.addAll(defaultTransportModes(model.availableLinkModes()));
@@ -131,7 +143,6 @@ public final class NetworkPanel extends JPanel {
                     panX += dx;
                     panY -= dy;
                     dragStart = current;
-                    invalidateNetworkCache();
                     repaint();
                 }
             }
@@ -462,22 +473,52 @@ public final class NetworkPanel extends JPanel {
 
         Graphics2D g2 = (Graphics2D) g.create();
         g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_OFF);
+        g2.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_SPEED);
+
+        renderScene(g2, !suppressOverlays, showQueues && !suppressOverlays);
+        g2.dispose();
+    }
+
+    public void paintRecordingFrame(Graphics2D g2) {
+        if (getWidth() <= 0 || getHeight() <= 0) {
+            return;
+        }
+
+        ensureFitted();
+
+        Graphics2D captureGraphics = (Graphics2D) g2.create();
+        captureGraphics.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_OFF);
+        captureGraphics.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_SPEED);
+        renderScene(captureGraphics, false, false);
+        captureGraphics.dispose();
+    }
+
+    private void renderScene(Graphics2D g2, boolean drawOverlays, boolean drawQueueText) {
 
         renderNetworkLayerIfNeeded();
         if (cachedNetworkLayer != null) {
-            g2.drawImage(cachedNetworkLayer, 0, 0, null);
+            int panShiftX = (int) Math.round(panX - cachedPanX);
+            int panShiftY = (int) Math.round(cachedPanY - panY);
+
+            Graphics2D worldGraphics = (Graphics2D) g2.create();
+            worldGraphics.translate(panShiftX, panShiftY);
+            worldGraphics.drawImage(cachedNetworkLayer, 0, 0, null);
+            drawVehicles(worldGraphics);
+            if (drawQueueText) {
+                drawQueueLabels(worldGraphics);
+            }
+            worldGraphics.dispose();
+        } else {
+            drawVehicles(g2);
+            if (drawQueueText) {
+                drawQueueLabels(g2);
+            }
         }
 
-        drawVehicles(g2);
-        if (showQueues && !suppressOverlays) {
-            drawQueueLabels(g2);
-        }
-        if (!suppressOverlays) {
+        if (drawOverlays) {
             drawClockOverlay(g2);
             drawLegendOverlay(g2);
         }
-
-        g2.dispose();
     }
 
     private void ensureFitted() {
@@ -501,13 +542,20 @@ public final class NetworkPanel extends JPanel {
     }
 
     private void renderNetworkLayerIfNeeded() {
+        long now = System.nanoTime();
         if (cachedNetworkLayer != null
                 && cachedZoom == zoom
-                && cachedPanX == panX
-                && cachedPanY == panY
                 && cachedWidth == getWidth()
                 && cachedHeight == getHeight()) {
-            return;
+            double panDriftX = Math.abs(panX - cachedPanX);
+            double panDriftY = Math.abs(panY - cachedPanY);
+            double maxPanDrift = Math.max(cachedWidth, cachedHeight) * PAN_CACHE_MAX_DRIFT_RATIO;
+            boolean driftTooLarge = panDriftX > maxPanDrift || panDriftY > maxPanDrift;
+            boolean refreshForPanning = (panDriftX > 0.5 || panDriftY > 0.5)
+                    && (now - lastNetworkRenderNanos) >= PAN_CACHE_REFRESH_NANOS;
+            if (!driftTooLarge && !refreshForPanning) {
+                return;
+            }
         }
 
         cachedWidth = getWidth();
@@ -515,26 +563,40 @@ public final class NetworkPanel extends JPanel {
         cachedZoom = zoom;
         cachedPanX = panX;
         cachedPanY = panY;
+        lastNetworkRenderNanos = now;
 
-        cachedNetworkLayer = new BufferedImage(cachedWidth, cachedHeight, BufferedImage.TYPE_INT_RGB);
+        cachedNetworkLayer = createCompatibleImage(cachedWidth, cachedHeight);
         Graphics2D g2 = cachedNetworkLayer.createGraphics();
         g2.setColor(mapBackground);
         g2.fillRect(0, 0, cachedWidth, cachedHeight);
         g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_OFF);
+        g2.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_SPEED);
 
         linkScreenGeometries.clear();
+        visibleLinkIds.clear();
+        queryVisibleLinks(visibleLinkIds);
+
         double laneWidth = laneWidthPixels();
         Map<String, double[]> nodeMaxRadius = new HashMap<>();
+        double minScreenLength = zoom < 0.3 ? 1.5 : 0.5;
 
         Set<String> renderedNodePairs = new HashSet<>();
-        for (LinkSegment link : model.networkData().getLinks().values()) {
+        for (String linkId : visibleLinkIds) {
+            LinkSegment link = model.networkData().getLinks().get(linkId);
+            if (link == null) {
+                continue;
+            }
             if (shouldRenderLink(link)) {
                 renderedNodePairs.add(link.fromNodeId() + ">" + link.toNodeId());
             }
         }
 
         g2.setColor(mapRoad);
-        for (LinkSegment link : model.networkData().getLinks().values()) {
+        for (String linkId : visibleLinkIds) {
+            LinkSegment link = model.networkData().getLinks().get(linkId);
+            if (link == null) {
+                continue;
+            }
             if (!shouldRenderLink(link)) {
                 continue;
             }
@@ -544,7 +606,7 @@ public final class NetworkPanel extends JPanel {
             double dx = b.x - a.x;
             double dy = b.y - a.y;
             double length = Math.hypot(dx, dy);
-            if (length < 0.0001) {
+            if (length < minScreenLength) {
                 continue;
             }
 
@@ -594,145 +656,100 @@ public final class NetworkPanel extends JPanel {
 
     private void drawVehicles(Graphics2D g2) {
         double currentTime = playbackController.getCurrentTime();
-        List<Integer> activeTraversalIndexes = new ArrayList<>(playbackController.getActiveTraversalIndexes());
-        activeTraversalIndexes.sort(Integer::compareTo);
-
-        Map<String, List<Integer>> activeByLink = new HashMap<>();
-
-        for (int traversalIndex : activeTraversalIndexes) {
-            String linkId = model.traversalLinkId(traversalIndex);
-            LinkSegment link = model.networkData().getLinks().get(linkId);
-            if (link == null) {
-                continue;
-            }
-
-            if (!shouldRenderLink(link)) {
-                continue;
-            }
-
-            String tripMode = model.vehicleToMode().get(model.traversalVehicleId(traversalIndex));
-            if (!shouldRenderTripMode(tripMode)) {
-                continue;
-            }
-
-            activeByLink.computeIfAbsent(linkId, key -> new ArrayList<>()).add(traversalIndex);
+        Map<String, PlaybackController.LinkFrameSnapshot> linkState =
+                playbackController.snapshotLinkState(linkScreenGeometries.keySet());
+        if (linkState.isEmpty()) {
+            return;
         }
 
-        for (Map.Entry<String, List<Integer>> entry : activeByLink.entrySet()) {
-            String linkId = entry.getKey();
-            LinkSegment link = model.networkData().getLinks().get(linkId);
-            if (link == null) {
-                continue;
-            }
+        int totalTraversals = 0;
+        for (PlaybackController.LinkFrameSnapshot state : linkState.values()) {
+            totalTraversals += state.traversalIndexes().length;
+        }
 
-            LinkScreenGeometry geometry = linkScreenGeometries.get(link.id());
-            if (geometry == null) {
-                continue;
-            }
+        boolean canParallelize = Runtime.getRuntime().availableProcessors() > 1
+                && linkState.size() >= PARALLEL_MIN_VISIBLE_LINKS
+                && totalTraversals >= PARALLEL_MIN_ACTIVE_TRAVERSALS;
 
-            List<Integer> linkTraversals = entry.getValue();
+        Stream<Map.Entry<String, PlaybackController.LinkFrameSnapshot>> stateStream = linkState.entrySet().stream();
+        if (canParallelize) {
+            stateStream = stateStream.parallel();
+        }
 
-            boolean linkIsBottleneck = false;
-            if (showBottleneck) {
-                int queueCount = playbackController.getQueueCountForLink(linkId);
-                double capacity = sampleSize * laneCount(link) * (link.length() / bottleneckDivisor);
-                linkIsBottleneck = queueCount > capacity;
-            }
+        List<PreparedLinkVehicles> preparedLinks = stateStream
+                .map(entry -> prepareLinkVehicles(entry.getKey(), entry.getValue(), currentTime))
+                .filter(Objects::nonNull)
+                .toList();
 
-                List<Integer> bikeTraversals = new ArrayList<>();
-                List<Integer> truckTraversals = new ArrayList<>();
-                List<Integer> busTraversals = new ArrayList<>();
-                List<Integer> railTraversals = new ArrayList<>();
-                List<Integer> carLikeTraversals = new ArrayList<>();
-            for (int traversalIndex : linkTraversals) {
-                String mode = model.vehicleToMode().get(model.traversalVehicleId(traversalIndex));
-                if (isBikeMode(mode)) {
-                    bikeTraversals.add(traversalIndex);
-                } else if (isTruckMode(mode)) {
-                    truckTraversals.add(traversalIndex);
-                } else if (isBusMode(mode)) {
-                    busTraversals.add(traversalIndex);
-                } else if (isRailMode(mode)) {
-                    railTraversals.add(traversalIndex);
-                } else {
-                    carLikeTraversals.add(traversalIndex);
-                }
-            }
-
-                carLikeTraversals.sort(Comparator.comparingDouble((Integer idx) -> naturalProgress(idx, currentTime)).reversed());
-                truckTraversals.sort(Comparator.comparingDouble((Integer idx) -> naturalProgress(idx, currentTime)).reversed());
-            bikeTraversals.sort(Comparator.comparingDouble((Integer idx) -> naturalProgress(idx, currentTime)).reversed());
-            busTraversals.sort(Comparator.comparingDouble((Integer idx) -> naturalProgress(idx, currentTime)).reversed());
-            railTraversals.sort(Comparator.comparingDouble((Integer idx) -> naturalProgress(idx, currentTime)).reversed());
-
+        for (PreparedLinkVehicles prepared : preparedLinks) {
             drawModeGroup(
                     g2,
-                    geometry,
-                    link,
-                    carLikeTraversals,
+                    prepared.geometry(),
+                    prepared.link(),
+                    prepared.carTraversals(),
                     currentTime,
                     carLikeVehicleLengthMeters,
                     carLikeVehicleWidthRatio,
                     carShape,
                     0.12,
                     true,
-                    linkIsBottleneck
+                    prepared.linkIsBottleneck()
             );
 
-                drawModeGroup(
+            drawModeGroup(
                     g2,
-                    geometry,
-                    link,
-                    truckTraversals,
+                    prepared.geometry(),
+                    prepared.link(),
+                    prepared.truckTraversals(),
                     currentTime,
                     truckVehicleLengthMeters,
                     truckVehicleWidthRatio,
                     truckShape,
                     0.30,
                     true,
-                    linkIsBottleneck
-                );
+                    prepared.linkIsBottleneck()
+            );
 
             drawModeGroup(
                     g2,
-                    geometry,
-                    link,
-                    busTraversals,
+                    prepared.geometry(),
+                    prepared.link(),
+                    prepared.busTraversals(),
                     currentTime,
                     busVehicleLengthMeters,
                     busVehicleWidthRatio,
                     busShape,
                     0.15,
                     true,
-                    linkIsBottleneck
+                    prepared.linkIsBottleneck()
             );
 
             drawModeGroup(
                     g2,
-                    geometry,
-                    link,
-                    railTraversals,
+                    prepared.geometry(),
+                    prepared.link(),
+                    prepared.railTraversals(),
                     currentTime,
                     railVehicleLengthMeters,
                     railVehicleWidthRatio,
                     railShape,
                     0.0,
                     true,
-                    linkIsBottleneck
+                    prepared.linkIsBottleneck()
             );
 
             drawModeGroup(
                     g2,
-                    geometry,
-                    link,
-                    bikeTraversals,
+                    prepared.geometry(),
+                    prepared.link(),
+                    prepared.bikeTraversals(),
                     currentTime,
                     bikeVehicleLengthMeters,
                     bikeVehicleWidthRatio,
                     bikeShape,
                     -0.20,
                     false,
-                    linkIsBottleneck
+                    prepared.linkIsBottleneck()
             );
         }
     }
@@ -796,7 +813,7 @@ public final class NetworkPanel extends JPanel {
             sx += geometry.nx() * laneOffset;
             sy += geometry.ny() * laneOffset;
 
-            String tripMode = model.vehicleToMode().get(model.traversalVehicleId(traversalIndex));
+            String tripMode = model.traversalTripMode(traversalIndex);
             Color drawColor;
             if (showBottleneck) {
                 drawColor = isBottleneck ? BOTTLENECK_CONGESTED : BOTTLENECK_NORMAL;
@@ -815,15 +832,17 @@ public final class NetworkPanel extends JPanel {
                 vehicleWidthPx = Math.max(minVehicleWidthPixels, vehicleWidthPx);
             }
 
-            drawVehicle(g2, sx, sy, geometry.angle(), vehicleLengthPx, vehicleWidthPx, shape);
+            if (vehicleLengthPx < 3.0 && vehicleWidthPx < 3.0) {
+                g2.fillRect((int) Math.round(sx), (int) Math.round(sy), 1, 1);
+            } else {
+                drawVehicle(g2, sx, sy, geometry.angle(), vehicleLengthPx, vehicleWidthPx, shape);
+            }
         }
     }
 
     private double naturalProgress(int traversalIndex, double currentTime) {
         double enter = model.traversalEnterTime(traversalIndex);
-        double leave = model.traversalLeaveTime(traversalIndex);
-        double duration = Math.max(0.05, leave - enter);
-        double progress = (currentTime - enter) / duration;
+        double progress = (currentTime - enter) * model.traversalInverseDuration(traversalIndex);
         return Math.max(0.0, Math.min(1.0, progress));
     }
 
@@ -889,6 +908,132 @@ public final class NetworkPanel extends JPanel {
 
     private void invalidateNetworkCache() {
         cachedNetworkLayer = null;
+        lastNetworkRenderNanos = 0L;
+    }
+
+    private PreparedLinkVehicles prepareLinkVehicles(
+            String linkId,
+            PlaybackController.LinkFrameSnapshot linkState,
+            double currentTime
+    ) {
+        LinkScreenGeometry geometry = linkScreenGeometries.get(linkId);
+        LinkSegment link = model.networkData().getLinks().get(linkId);
+        if (geometry == null || link == null) {
+            return null;
+        }
+
+        int[] traversalIndexes = linkState.traversalIndexes();
+        if (traversalIndexes.length == 0) {
+            return null;
+        }
+
+        List<Integer> bikeTraversals = null;
+        List<Integer> truckTraversals = null;
+        List<Integer> busTraversals = null;
+        List<Integer> railTraversals = null;
+        List<Integer> carTraversals = null;
+
+        for (int traversalIndex : traversalIndexes) {
+            String mode = model.traversalTripMode(traversalIndex);
+            if (!shouldRenderTripMode(mode)) {
+                continue;
+            }
+
+            if (isBikeMode(mode)) {
+                if (bikeTraversals == null) {
+                    bikeTraversals = new ArrayList<>();
+                }
+                bikeTraversals.add(traversalIndex);
+            } else if (isTruckMode(mode)) {
+                if (truckTraversals == null) {
+                    truckTraversals = new ArrayList<>();
+                }
+                truckTraversals.add(traversalIndex);
+            } else if (isBusMode(mode)) {
+                if (busTraversals == null) {
+                    busTraversals = new ArrayList<>();
+                }
+                busTraversals.add(traversalIndex);
+            } else if (isRailMode(mode)) {
+                if (railTraversals == null) {
+                    railTraversals = new ArrayList<>();
+                }
+                railTraversals.add(traversalIndex);
+            } else {
+                if (carTraversals == null) {
+                    carTraversals = new ArrayList<>();
+                }
+                carTraversals.add(traversalIndex);
+            }
+        }
+
+        if (bikeTraversals == null
+                && truckTraversals == null
+                && busTraversals == null
+                && railTraversals == null
+                && carTraversals == null) {
+            return null;
+        }
+
+        sortByProgressIfReasonable(carTraversals, currentTime);
+        sortByProgressIfReasonable(truckTraversals, currentTime);
+        sortByProgressIfReasonable(busTraversals, currentTime);
+        sortByProgressIfReasonable(railTraversals, currentTime);
+        sortByProgressIfReasonable(bikeTraversals, currentTime);
+
+        boolean linkIsBottleneck = false;
+        if (showBottleneck) {
+            double capacity = sampleSize * laneCount(link) * (link.length() / bottleneckDivisor);
+            linkIsBottleneck = linkState.queueCount() > capacity;
+        }
+
+        return new PreparedLinkVehicles(
+                link,
+                geometry,
+                linkIsBottleneck,
+                emptyIfNull(carTraversals),
+                emptyIfNull(truckTraversals),
+                emptyIfNull(busTraversals),
+                emptyIfNull(railTraversals),
+                emptyIfNull(bikeTraversals)
+        );
+    }
+
+    private void sortByProgressIfReasonable(List<Integer> traversals, double currentTime) {
+        if (traversals == null || traversals.size() <= 1 || traversals.size() > MAX_SORTED_TRAVERSALS_PER_GROUP) {
+            return;
+        }
+        traversals.sort((left, right) -> Double.compare(
+                naturalProgress(right, currentTime),
+                naturalProgress(left, currentTime)
+        ));
+    }
+
+    private static List<Integer> emptyIfNull(List<Integer> traversals) {
+        return traversals == null ? List.of() : traversals;
+    }
+
+    private void queryVisibleLinks(Set<String> output) {
+        Point2D.Double topLeft = screenToWorld(-VIEWPORT_WORLD_PADDING_PX, -VIEWPORT_WORLD_PADDING_PX);
+        Point2D.Double bottomRight = screenToWorld(
+                getWidth() + VIEWPORT_WORLD_PADDING_PX,
+                getHeight() + VIEWPORT_WORLD_PADDING_PX
+        );
+
+        double minWorldX = Math.min(topLeft.x, bottomRight.x);
+        double maxWorldX = Math.max(topLeft.x, bottomRight.x);
+        double minWorldY = Math.min(topLeft.y, bottomRight.y);
+        double maxWorldY = Math.max(topLeft.y, bottomRight.y);
+
+        spatialGrid.query(minWorldX, minWorldY, maxWorldX, maxWorldY, output);
+    }
+
+    private BufferedImage createCompatibleImage(int width, int height) {
+        GraphicsConfiguration configuration = getGraphicsConfiguration();
+        if (configuration == null) {
+            return new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
+        }
+        return configuration.createCompatibleImage(width, height);
     }
 
     private boolean shouldRenderLink(LinkSegment link) {
@@ -942,10 +1087,6 @@ public final class NetworkPanel extends JPanel {
                 g2.fill(new Rectangle2D.Double(-hl, -hw, length, width));
             }
             case ARROW -> {
-                int[] xs = {(int) Math.round(hl), (int) Math.round(-hl), (int) Math.round(-hl * 0.4),
-                            (int) Math.round(-hl), (int) Math.round(-hl)};
-                int[] ys = {0, (int) Math.round(-hw), 0,
-                            (int) Math.round(hw), (int) Math.round(-hw)};
                 // Arrow: tip at front, notched tail
                 int[] axs = {(int) Math.round(hl), (int) Math.round(-hl), (int) Math.round(-hl * 0.5),
                              (int) Math.round(-hl)};
@@ -1157,6 +1298,18 @@ public final class NetworkPanel extends JPanel {
             }
         }
         return selected;
+    }
+
+    private record PreparedLinkVehicles(
+            LinkSegment link,
+            LinkScreenGeometry geometry,
+            boolean linkIsBottleneck,
+            List<Integer> carTraversals,
+            List<Integer> truckTraversals,
+            List<Integer> busTraversals,
+            List<Integer> railTraversals,
+            List<Integer> bikeTraversals
+    ) {
     }
 
     private record LinkScreenGeometry(

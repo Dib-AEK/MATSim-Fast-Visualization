@@ -1,5 +1,6 @@
 package com.matsim.viz.ui.fx;
 
+import com.matsim.viz.config.AppConfig;
 import com.matsim.viz.domain.ColorMode;
 import com.matsim.viz.domain.VehicleShape;
 import com.matsim.viz.engine.PlaybackController;
@@ -55,6 +56,7 @@ public final class FxVisualizerApp extends Application {
     private static PlaybackController startupPlaybackController;
     private static double startupSampleSize = 1.0;
     private static Path startupCacheDir;
+    private static AppConfig startupAppConfig;
 
     private PanelVideoRecorder videoRecorder;
     private Scene mainScene;
@@ -69,11 +71,18 @@ public final class FxVisualizerApp extends Application {
             "Light theme CSS not found"
     ).toExternalForm();
 
-    public static void launchVisualizer(SimulationModel model, PlaybackController playbackController, double sampleSize, Path cacheDir) {
+    public static void launchVisualizer(
+            SimulationModel model,
+            PlaybackController playbackController,
+            double sampleSize,
+            Path cacheDir,
+            AppConfig appConfig
+    ) {
         startupModel = Objects.requireNonNull(model, "model");
         startupPlaybackController = Objects.requireNonNull(playbackController, "playbackController");
         startupSampleSize = sampleSize;
         startupCacheDir = cacheDir;
+        startupAppConfig = appConfig;
         Application.launch(FxVisualizerApp.class);
     }
 
@@ -89,6 +98,7 @@ public final class FxVisualizerApp extends Application {
         NetworkPanel networkPanel = getOnEdt(() -> new NetworkPanel(model, playbackController));
         runOnEdt(() -> networkPanel.setPreferredSize(new Dimension(1200, 800)));
         runOnEdt(() -> networkPanel.setSampleSize(startupSampleSize));
+        applyStartupDefaults(networkPanel);
 
         Path recordDir = startupCacheDir != null ? startupCacheDir : Path.of("cache");
         videoRecorder = new PanelVideoRecorder(recordDir);
@@ -167,7 +177,7 @@ public final class FxVisualizerApp extends Application {
         colorCaption.getStyleClass().add("field-caption");
 
         ComboBox<ColorMode> colorModeCombo = new ComboBox<>(FXCollections.observableArrayList(ColorMode.values()));
-        colorModeCombo.setValue(ColorMode.DEFAULT);
+        colorModeCombo.setValue(parseColorModeDefault());
         colorModeCombo.valueProperty().addListener((obs, oldValue, newValue) -> {
             if (newValue != null) {
                 runOnEdt(() -> networkPanel.setColorMode(newValue));
@@ -180,30 +190,47 @@ public final class FxVisualizerApp extends Application {
 
         ComboBox<PanelVideoRecorder.Quality> qualityCombo = new ComboBox<>(
                 FXCollections.observableArrayList(PanelVideoRecorder.Quality.values()));
-        qualityCombo.setValue(PanelVideoRecorder.Quality.MEDIUM);
+        qualityCombo.setValue(parseRecordingQualityDefault());
         qualityCombo.setPrefWidth(230);
 
         Button recordButton = new Button("\u23FA Record");
         recordButton.getStyleClass().add("accent-button");
         recordButton.setOnAction(e -> {
             if (videoRecorder.isRecording()) {
-                try {
-                    Path saved = videoRecorder.stop();
+                recordButton.setDisable(true);
+                recordButton.setText("Encoding...");
+                recordButton.getStyleClass().remove("recording-button");
+                qualityCombo.setDisable(true);
+
+                int queuedFrames = videoRecorder.queuedFrameCount();
+                videoRecorder.stopAsync().whenComplete((saved, ex) -> Platform.runLater(() -> {
+                    recordButton.setDisable(false);
                     recordButton.setText("\u23FA Record");
-                    recordButton.getStyleClass().remove("recording-button");
                     qualityCombo.setDisable(false);
+
+                    if (ex != null) {
+                        Alert err = new Alert(Alert.AlertType.ERROR, ex.getMessage());
+                        err.setHeaderText("Failed to encode recording");
+                        err.showAndWait();
+                        return;
+                    }
+
                     if (saved != null) {
                         Alert info = new Alert(Alert.AlertType.INFORMATION,
-                                "Video saved to:\n" + saved.toAbsolutePath());
+                                "Frames captured: " + queuedFrames + "\n\n"
+                                        + "Video saved to:\n" + saved.toAbsolutePath());
                         info.setHeaderText("Recording Saved");
                         info.showAndWait();
                     }
-                } catch (IOException ex) {
-                    Alert err = new Alert(Alert.AlertType.ERROR, ex.getMessage());
-                    err.setHeaderText("Failed to stop recording");
-                    err.showAndWait();
-                }
+                }));
             } else {
+                if (videoRecorder.isEncoding()) {
+                    Alert info = new Alert(Alert.AlertType.INFORMATION,
+                            "Encoding is still in progress. Please wait until it finishes.");
+                    info.setHeaderText("Recorder Busy");
+                    info.showAndWait();
+                    return;
+                }
                 try {
                     videoRecorder.start(qualityCombo.getValue());
                     recordButton.setText("\u23F9 Stop");
@@ -780,6 +807,92 @@ public final class FxVisualizerApp extends Application {
         refreshRows.run();
         card.getChildren().addAll(top, rows);
         return card;
+    }
+
+    private void applyStartupDefaults(NetworkPanel networkPanel) {
+        AppConfig config = startupAppConfig;
+        if (config == null) {
+            return;
+        }
+
+        runOnEdt(() -> {
+            networkPanel.setDarkTheme(config.uiDarkTheme());
+            networkPanel.setColorMode(parseColorModeDefault());
+            networkPanel.setShowQueues(config.uiShowQueues());
+            networkPanel.setBidirectionalOffset(config.uiBidirectionalOffset());
+            networkPanel.setShowBottleneck(config.uiShowBottleneck());
+            networkPanel.setBottleneckDivisor(config.uiBottleneckDivisor());
+            networkPanel.setKeepVehiclesVisibleWhenZoomedOut(config.uiKeepVehiclesVisibleWhenZoomedOut());
+            networkPanel.setMinVehicleLengthPixels(config.uiMinVehicleLengthPixels());
+            networkPanel.setMinVehicleWidthPixels(config.uiMinVehicleWidthPixels());
+
+            networkPanel.setCarLikeVehicleLengthMeters(config.uiVehicleLengthCarMeters());
+            networkPanel.setBikeVehicleLengthMeters(config.uiVehicleLengthBikeMeters());
+            networkPanel.setTruckVehicleLengthMeters(config.uiVehicleLengthTruckMeters());
+            networkPanel.setBusVehicleLengthMeters(config.uiVehicleLengthBusMeters());
+            networkPanel.setRailVehicleLengthMeters(config.uiVehicleLengthRailMeters());
+
+            networkPanel.setCarLikeVehicleWidthRatio(config.uiVehicleWidthRatioCar());
+            networkPanel.setBikeVehicleWidthRatio(config.uiVehicleWidthRatioBike());
+            networkPanel.setTruckVehicleWidthRatio(config.uiVehicleWidthRatioTruck());
+            networkPanel.setBusVehicleWidthRatio(config.uiVehicleWidthRatioBus());
+            networkPanel.setRailVehicleWidthRatio(config.uiVehicleWidthRatioRail());
+
+            networkPanel.setCarShape(parseVehicleShape(config.uiVehicleShapeCar(), VehicleShape.RECTANGLE));
+            networkPanel.setBikeShape(parseVehicleShape(config.uiVehicleShapeBike(), VehicleShape.DIAMOND));
+            networkPanel.setTruckShape(parseVehicleShape(config.uiVehicleShapeTruck(), VehicleShape.RECTANGLE));
+            networkPanel.setBusShape(parseVehicleShape(config.uiVehicleShapeBus(), VehicleShape.OVAL));
+            networkPanel.setRailShape(parseVehicleShape(config.uiVehicleShapeRail(), VehicleShape.ARROW));
+        });
+    }
+
+    private ColorMode parseColorModeDefault() {
+        AppConfig config = startupAppConfig;
+        if (config == null) {
+            return ColorMode.DEFAULT;
+        }
+        return parseColorMode(config.uiColorMode(), ColorMode.DEFAULT);
+    }
+
+    private PanelVideoRecorder.Quality parseRecordingQualityDefault() {
+        AppConfig config = startupAppConfig;
+        if (config == null) {
+            return PanelVideoRecorder.Quality.VIEWPORT_SYNC;
+        }
+        return parseRecordingQuality(config.recordingDefaultQuality(), PanelVideoRecorder.Quality.VIEWPORT_SYNC);
+    }
+
+    private static ColorMode parseColorMode(String raw, ColorMode fallback) {
+        if (raw == null || raw.isBlank()) {
+            return fallback;
+        }
+        try {
+            return ColorMode.valueOf(raw.trim().toUpperCase());
+        } catch (IllegalArgumentException ex) {
+            return fallback;
+        }
+    }
+
+    private static VehicleShape parseVehicleShape(String raw, VehicleShape fallback) {
+        if (raw == null || raw.isBlank()) {
+            return fallback;
+        }
+        try {
+            return VehicleShape.valueOf(raw.trim().toUpperCase());
+        } catch (IllegalArgumentException ex) {
+            return fallback;
+        }
+    }
+
+    private static PanelVideoRecorder.Quality parseRecordingQuality(String raw, PanelVideoRecorder.Quality fallback) {
+        if (raw == null || raw.isBlank()) {
+            return fallback;
+        }
+        try {
+            return PanelVideoRecorder.Quality.valueOf(raw.trim().toUpperCase());
+        } catch (IllegalArgumentException ex) {
+            return fallback;
+        }
     }
 
     private AnimationTimer createAnimationTimer(PlaybackController playbackController, NetworkPanel networkPanel, PlaybackUiState uiState) {

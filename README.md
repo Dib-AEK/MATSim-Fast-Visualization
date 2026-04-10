@@ -47,12 +47,16 @@ It shows multiple features, such as location of bottlenecks.
 - `src/main/java/com/matsim/viz/ui`: rendering core and shared visualization logic
 - `src/main/java/com/matsim/viz/ui/fx`: JavaFX modern UI shell and controls
 - `src/main/java/com/matsim/viz/Main.java`: application entrypoint
+- `docs/CODE_ORGANIZATION.md`: architecture map, dataflow graph, and "where to change what" guide
 
 ## Why This Is Fast
 
 - MATSim-native events processing using `EventsManager` and `EventsHandler`s.
 - Pre-indexed enter/leave transitions for incremental playback updates.
 - Cached network background rendering; only moving vehicles redraw each frame.
+- Viewport culling with a spatial grid, so only links near the current view are rendered.
+- Link-oriented active traversal tracking, so vehicle drawing scales with visible activity.
+- Pan-optimized cache reuse to keep navigation smooth while dragging.
 - Persistent processed-data cache (network + traversals + metadata) to skip reprocessing unchanged simulations.
 
 ## Setup
@@ -85,12 +89,27 @@ mvn -q exec:java -Dexec.args="--build-cache"
 mvn -q exec:java -Dexec.args="--gui-only"
 ```
 
+Rendering acceleration knobs in `config/app.properties`:
+
+```properties
+# auto | d3d | opengl | none
+render.java2d.pipeline=auto
+render.java2d.force.vram=false
+```
+
+- On Windows, `auto` selects the Java2D Direct3D pipeline.
+- For some GPUs/drivers, trying `opengl` can improve pan/zoom smoothness.
+
 ## Controls
 
 - `Play/Pause`: start or stop animation
 - `Time slider`: jump to any simulation second
 - `Speed slider`: playback multiplier from `x1` to `x600` (up to 1 simulated hour in 6 seconds)
 - `Color`: `DEFAULT`, `TRIP_PURPOSE`, `AGE_GROUP`, `SEX`
+- Recording quality now preserves viewport aspect ratio (no stretching/skew).
+- New recording option: `Viewport native (app sync)` captures on-screen resolution at app frame cadence.
+- Frames are queued during recording and encoded after stop on a background thread to reduce recording slowdowns.
+- Final output uses `Lossless PNG MOV` (compressed but no visual quality loss; very large files).
 - `Network Modes` panel: checkbox multi-select of one or more link modes to render
 - `Trip Modes` panel: checkbox multi-select of one or more trip modes to render
 - `Trip Mode Colors`: set colors per trip mode

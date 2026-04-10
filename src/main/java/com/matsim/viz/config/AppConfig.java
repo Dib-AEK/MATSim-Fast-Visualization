@@ -5,20 +5,38 @@ import java.nio.file.Path;
 public record AppConfig(
         Path matsimConfigFile,
         Path cacheDir,
-        Path scenarioDir,
-        String outputDirName,
-        String explicitNetworkFile,
-        String explicitEventsFile,
-        String explicitTripsFile,
         int playbackStartSeconds,
         int playbackEndSeconds,
-        int playbackSpeed
+        int playbackSpeed,
+        String java2dPipeline,
+        boolean java2dForceVram,
+        boolean uiDarkTheme,
+        String uiColorMode,
+        boolean uiShowQueues,
+        double uiBidirectionalOffset,
+        boolean uiShowBottleneck,
+        double uiBottleneckDivisor,
+        boolean uiKeepVehiclesVisibleWhenZoomedOut,
+        double uiMinVehicleLengthPixels,
+        double uiMinVehicleWidthPixels,
+        double uiVehicleLengthCarMeters,
+        double uiVehicleLengthBikeMeters,
+        double uiVehicleLengthTruckMeters,
+        double uiVehicleLengthBusMeters,
+        double uiVehicleLengthRailMeters,
+        double uiVehicleWidthRatioCar,
+        double uiVehicleWidthRatioBike,
+        double uiVehicleWidthRatioTruck,
+        double uiVehicleWidthRatioBus,
+        double uiVehicleWidthRatioRail,
+        String uiVehicleShapeCar,
+        String uiVehicleShapeBike,
+        String uiVehicleShapeTruck,
+        String uiVehicleShapeBus,
+        String uiVehicleShapeRail,
+        String recordingDefaultQuality
 ) {
     public boolean hasMatsimConfigFile() {
         return matsimConfigFile != null;
-    }
-
-    public Path outputDir() {
-        return scenarioDir.resolve(outputDirName);
     }
 }

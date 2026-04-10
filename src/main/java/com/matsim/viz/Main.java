@@ -34,6 +34,7 @@ public final class Main {
 
         Path configPath = Path.of("config", "app.properties").toAbsolutePath();
         AppConfig config = ConfigLoader.load(configPath);
+        configureJava2dAcceleration(config);
         MatsimScenarioLoader scenarioLoader = new MatsimScenarioLoader();
         ResolvedSimulationInputs inputs = scenarioLoader.resolveInputs(config);
         String cacheKey = SimulationFingerprint.fromInputs(inputs);
@@ -173,11 +174,42 @@ public final class Main {
         }
         System.out.printf("Sample size: %.4f%n", sampleSize);
 
-        FxVisualizerApp.launchVisualizer(model, playbackController, sampleSize, config.cacheDir());
+        FxVisualizerApp.launchVisualizer(model, playbackController, sampleSize, config.cacheDir(), config);
     }
 
     private static double seconds(long nanos) {
         return nanos / 1_000_000_000.0;
+    }
+
+    private static void configureJava2dAcceleration(AppConfig config) {
+        String pipeline = config.java2dPipeline() == null
+                ? "auto"
+                : config.java2dPipeline().trim().toLowerCase();
+
+        switch (pipeline) {
+            case "none" -> {
+                // Keep JVM defaults.
+            }
+            case "opengl" -> System.setProperty("sun.java2d.opengl", "true");
+            case "d3d", "direct3d" -> System.setProperty("sun.java2d.d3d", "true");
+            case "auto" -> {
+                String os = System.getProperty("os.name", "").toLowerCase();
+                if (os.contains("win")) {
+                    System.setProperty("sun.java2d.d3d", "true");
+                } else {
+                    System.setProperty("sun.java2d.opengl", "true");
+                }
+            }
+            default -> System.out.println("Unknown render.java2d.pipeline='" + pipeline + "'. Using JVM defaults.");
+        }
+
+        if (config.java2dForceVram()) {
+            System.setProperty("sun.java2d.ddforcevram", "true");
+            System.setProperty("sun.java2d.accthreshold", "0");
+        }
+
+        System.out.println("Java2D pipeline setting: " + pipeline
+                + ", forceVram=" + config.java2dForceVram());
     }
 
     private record RunOptions(boolean overwriteCache, boolean buildCacheOnly, boolean guiOnly) {

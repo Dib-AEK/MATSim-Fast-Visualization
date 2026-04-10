@@ -22,8 +22,6 @@ C:\Users\dabdelkader\Desktop\work\codes\MATSim-Fast-Visualization\src\main\java\
 C:\Users\dabdelkader\Desktop\work\codes\MATSim-Fast-Visualization\src\main\java\com\matsim\viz\parser\MatsimEventsProcessor.java
 C:\Users\dabdelkader\Desktop\work\codes\MATSim-Fast-Visualization\src\main\java\com\matsim\viz\parser\MatsimNetworkConverter.java
 C:\Users\dabdelkader\Desktop\work\codes\MATSim-Fast-Visualization\src\main\java\com\matsim\viz\parser\MatsimNetworkParser.java
-C:\Users\dabdelkader\Desktop\work\codes\MATSim-Fast-Visualization\src\main\java\com\matsim\viz\parser\MatsimPathResolver.java
-C:\Users\dabdelkader\Desktop\work\codes\MATSim-Fast-Visualization\src\main\java\com\matsim\viz\parser\MatsimPaths.java
 C:\Users\dabdelkader\Desktop\work\codes\MATSim-Fast-Visualization\src\main\java\com\matsim\viz\parser\MatsimScenarioBundle.java
 C:\Users\dabdelkader\Desktop\work\codes\MATSim-Fast-Visualization\src\main\java\com\matsim\viz\parser\MatsimScenarioLoader.java
 C:\Users\dabdelkader\Desktop\work\codes\MATSim-Fast-Visualization\src\main\java\com\matsim\viz\parser\PersonsCsvParser.java
@@ -38,6 +36,7 @@ C:\Users\dabdelkader\Desktop\work\codes\MATSim-Fast-Visualization\src\main\java\
 C:\Users\dabdelkader\Desktop\work\codes\MATSim-Fast-Visualization\src\main\java\com\matsim\viz\ui\LinkFilter.java
 C:\Users\dabdelkader\Desktop\work\codes\MATSim-Fast-Visualization\src\main\java\com\matsim\viz\ui\NetworkPanel.java
 C:\Users\dabdelkader\Desktop\work\codes\MATSim-Fast-Visualization\src\main\java\com\matsim\viz\ui\PanelVideoRecorder.java
+C:\Users\dabdelkader\Desktop\work\codes\MATSim-Fast-Visualization\src\main\java\com\matsim\viz\ui\SpatialGrid.java
 C:\Users\dabdelkader\Desktop\work\codes\MATSim-Fast-Visualization\src\main\java\com\matsim\viz\ui\TimeFormat.java
 C:\Users\dabdelkader\Desktop\work\codes\MATSim-Fast-Visualization\src\main\java\com\matsim\viz\ui\TripModeFilter.java
 C:\Users\dabdelkader\Desktop\work\codes\MATSim-Fast-Visualization\src\main\java\com\matsim\viz\ui\VehicleColorProvider.java
