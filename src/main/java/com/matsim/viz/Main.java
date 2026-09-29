@@ -216,6 +216,7 @@ public final class Main {
         }
         System.out.printf("Sample size: %.4f%n", sampleSize);
 
+        FxVisualizerApp.setTransitSources(inputs.transitScheduleFile(), MatsimScenarioLoader.resolveTransitVehiclesFile(inputs));
         FxVisualizerApp.launchVisualizer(model, playbackController, sampleSize, config.cacheDir(), config);
     }
 

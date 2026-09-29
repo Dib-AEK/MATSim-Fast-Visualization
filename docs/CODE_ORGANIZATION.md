@@ -50,6 +50,8 @@ flowchart TD
 
 ### `com.matsim.viz.ui`
 - `NetworkPanel`: Main renderer, zoom/pan, map layer caching, viewport culling, vehicle drawing.
+- `ui/map/OsmBackground`: Shared OSM layer using MATSim CRS transformations, tile reprojection, and attribution.
+- `ui/map/OsmTileCache`: Bounded asynchronous tile cache shared with the network editor.
 - `SpatialGrid`: World-space uniform grid index for visible-link queries.
 - `VehicleColorProvider`: Color strategies (mode/purpose/age/sex).
 - `PanelVideoRecorder`: Frame capture queue + deferred lossless encoding.
@@ -135,3 +137,5 @@ flowchart TD
 
 - Recording:
 - `recording.default.quality`
+
+- Map defaults: `ui.map.background` (false), `ui.map.crs` (`EPSG:2056`).

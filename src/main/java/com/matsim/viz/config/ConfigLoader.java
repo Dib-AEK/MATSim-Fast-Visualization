@@ -61,7 +61,12 @@ public final class ConfigLoader {
                 properties.getProperty("ui.heatmap.speed.color.high", "#0C4A86").trim(),
                 properties.getProperty("ui.heatmap.speed.ratio.color.low", "#F7F7F7").trim(),
                 properties.getProperty("ui.heatmap.speed.ratio.color.high", "#0A5D2A").trim(),
-                properties.getProperty("recording.default.quality", "VIEWPORT_SYNC").trim()
+                properties.getProperty("recording.default.quality", "PRESENTATION_4K").trim(),
+                parseBoolean(properties, "ui.map.background", false),
+                properties.getProperty("ui.map.crs", "EPSG:2056").trim(),
+                parseDouble(properties, "ui.zoom.detail.start.lane.px", 0.3),
+                parseDouble(properties, "ui.zoom.detail.full.lane.px", 1.5),
+                parseDouble(properties, "ui.overview.vehicle.coverage", 0.75)
         );
     }
 

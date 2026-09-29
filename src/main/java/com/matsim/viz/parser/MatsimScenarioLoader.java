@@ -228,6 +228,21 @@ public final class MatsimScenarioLoader {
         return null;
     }
 
+    public static Path resolveTransitVehiclesFile(ResolvedSimulationInputs inputs) {
+        Path output=outputDirectory(inputs.matsimConfigFile(),inputs.matsimConfig());
+        String run=inputs.matsimConfig().controller().getRunId();
+        List<Path> candidates=new ArrayList<>();
+        for(String suffix:List.of("output_transitVehicles.xml.gz","output_transitVehicles.xml")) {
+            if(run!=null&&!run.isBlank())candidates.add(output.resolve(run+"."+suffix));
+            candidates.add(output.resolve(suffix));
+        }
+        String configured=inputs.matsimConfig().transit().getVehiclesFile();
+        if(configured!=null&&!configured.isBlank()) {
+            Path file=Path.of(configured);candidates.add(file.isAbsolute()?file:inputs.matsimConfigFile().getParent().resolve(file).normalize());
+        }
+        return candidates.stream().filter(Files::isRegularFile).findFirst().orElse(null);
+    }
+
     private static Path resolveTransitScheduleFile(Path matsimConfigPath, Config matsimConfig) {
         Path outputDir = outputDirectory(matsimConfigPath, matsimConfig);
         String runId = matsimConfig.controller().getRunId();

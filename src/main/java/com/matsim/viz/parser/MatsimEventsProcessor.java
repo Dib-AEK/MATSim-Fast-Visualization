@@ -18,7 +18,12 @@ public final class MatsimEventsProcessor {
         eventsManager.addHandler(collector);
 
         MatsimEventsReader reader = new MatsimEventsReader(eventsManager);
-        reader.readFile(eventsFile.toString());
+        eventsManager.initProcessing();
+        try {
+            reader.readFile(eventsFile.toString());
+        } finally {
+            eventsManager.finishProcessing();
+        }
 
         return collector.snapshotResult();
     }

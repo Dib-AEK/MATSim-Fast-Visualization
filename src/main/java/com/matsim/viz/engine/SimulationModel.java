@@ -300,6 +300,7 @@ public final class SimulationModel {
             int left,
             int right
     ) {
+        if (left >= right) return;
         int i = left;
         int j = right;
         double pivotTime = times[left + ((right - left) >> 1)];

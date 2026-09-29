@@ -43,7 +43,12 @@ public record AppConfig(
         String uiSpeedColorHigh,
         String uiSpeedRatioColorLow,
         String uiSpeedRatioColorHigh,
-        String recordingDefaultQuality
+        String recordingDefaultQuality,
+        boolean uiMapBackground,
+        String uiMapCrs,
+        double uiDetailStartLanePixels,
+        double uiDetailFullLanePixels,
+        double uiOverviewVehicleCoverage
 ) {
     public boolean hasMatsimConfigFile() {
         return matsimConfigFile != null;

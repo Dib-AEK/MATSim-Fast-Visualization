@@ -1,18 +1,10 @@
 package com.matsim.viz.ui;
 
-import org.jcodec.api.SequenceEncoder;
-import org.jcodec.common.Codec;
-import org.jcodec.common.Format;
-import org.jcodec.common.io.NIOUtils;
-import org.jcodec.common.io.SeekableByteChannel;
-import org.jcodec.common.model.Rational;
-import org.jcodec.scale.AWTUtil;
-
 import java.awt.DisplayMode;
 import java.awt.GraphicsDevice;
 import java.awt.GraphicsEnvironment;
 import java.awt.Graphics2D;
-import java.awt.RenderingHints;
+import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -28,6 +20,7 @@ import java.util.concurrent.Executors;
 public final class PanelVideoRecorder {
 
     public enum Quality {
+        PRESENTATION_4K("Presentation 4K / 15 fps", 3840, 2160, 15),
         VIEWPORT_SYNC("Viewport native (app sync)", 0, 0, 0),
         MEDIUM("720p 30fps", 1280, 720, 30),
         HIGH("1080p 30fps", 1920, 1080, 30),
@@ -83,10 +76,9 @@ public final class PanelVideoRecorder {
     private volatile int targetWidth;
     private volatile int targetHeight;
     private BufferedImage captureBuffer;
-    private BufferedImage sourceBuffer;
-    private int sourceBufferWidth;
-    private int sourceBufferHeight;
-    private List<BufferedImage> queuedFrames = new ArrayList<>();
+    private Path frameDirectory;
+    private volatile IOException captureFailure;
+    private List<Path> queuedFrames = new ArrayList<>();
 
     public PanelVideoRecorder(Path outputDir) {
         this.outputDir = outputDir.toAbsolutePath().normalize();
@@ -106,24 +98,23 @@ public final class PanelVideoRecorder {
             this.recordingFps = quality.isViewportNative()
                     ? detectDisplayRefreshRate()
                     : Math.max(1, quality.fps());
-            this.frameIntervalNanos = quality.isViewportNative()
+            this.frameIntervalNanos = quality.isViewportNative() || quality == Quality.PRESENTATION_4K
                     ? 0L
                     : 1_000_000_000L / recordingFps;
             this.lastCaptureNanos = 0;
             this.targetWidth = -1;
             this.targetHeight = -1;
             this.captureBuffer = null;
-            this.sourceBuffer = null;
-            this.sourceBufferWidth = -1;
-            this.sourceBufferHeight = -1;
+            this.captureFailure = null;
             this.queuedFrames = new ArrayList<>(4096);
         }
 
         Files.createDirectories(outputDir);
+        frameDirectory = Files.createTempDirectory(outputDir, "recording-frames-");
         String timestamp = java.time.LocalDateTime.now()
-                .format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"));
+                .format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss_SSS"));
         String qualityTag = quality.name().toLowerCase();
-        currentFile = outputDir.resolve("capture_" + timestamp + "_" + qualityTag + "_lossless.mov");
+        currentFile = outputDir.resolve("capture_" + timestamp + "_" + qualityTag + "_h264.mp4");
 
         synchronized (stateLock) {
             recording = true;
@@ -152,39 +143,43 @@ public final class PanelVideoRecorder {
             return;
         }
 
-        ensureSourceBuffer(pw, ph);
-        ensureCaptureBuffer(pw, ph);
-
-        Graphics2D sourceGraphics = sourceBuffer.createGraphics();
-        sourceGraphics.setColor(panel.getBackground());
-        sourceGraphics.fillRect(0, 0, pw, ph);
-        panel.paintRecordingFrame(sourceGraphics);
-        sourceGraphics.dispose();
-
-        renderScaledWithAspectPreserved(sourceBuffer, captureBuffer);
-
-        try {
-            BufferedImage queuedFrame = deepCopyRgb(captureBuffer);
-            synchronized (stateLock) {
-                if (!recording) {
-                    queuedFrame.flush();
-                    return;
+        // Serialize capture with stop: a frame is either fully saved or not enqueued.
+        synchronized (stateLock) {
+            if (!recording || captureFailure != null) return;
+            try {
+                ensureCaptureBuffer(pw, ph);
+                Graphics2D graphics = captureBuffer.createGraphics();
+                try {
+                    panel.paintRecordingFrame(graphics, targetWidth, targetHeight);
+                } finally {
+                    graphics.dispose();
                 }
-                queuedFrames.add(queuedFrame);
+                Path frame = frameDirectory.resolve(String.format("frame-%08d.png", frameCount));
+                if (!ImageIO.write(captureBuffer, "png", frame.toFile())) {
+                    throw new IOException("No PNG writer is available");
+                }
+                queuedFrames.add(frame);
                 frameCount = queuedFrames.size();
+            } catch (IOException ex) {
+                captureFailure = ex;
             }
-        } catch (OutOfMemoryError oom) {
-            synchronized (stateLock) {
-                recording = false;
-            }
-            System.err.println("Recording stopped: ran out of memory while queuing frames.");
         }
+    }
+
+    public boolean isPresentationRecording() {
+        return recording && quality == Quality.PRESENTATION_4K;
+    }
+
+    public double presentationFrameSeconds() {
+        return 1.0 / Quality.PRESENTATION_4K.fps();
     }
 
     public CompletableFuture<Path> stopAsync() {
         final Path outputPath;
         final int fps;
-        final List<BufferedImage> framesToEncode;
+        final List<Path> framesToEncode;
+        final Path spool;
+        final IOException failure;
 
         synchronized (stateLock) {
             if (!recording) {
@@ -195,31 +190,35 @@ public final class PanelVideoRecorder {
             outputPath = currentFile;
             fps = recordingFps;
             framesToEncode = queuedFrames;
+            spool = frameDirectory;
+            failure = captureFailure;
             queuedFrames = new ArrayList<>();
 
             captureBuffer = null;
-            sourceBuffer = null;
-            sourceBufferWidth = -1;
-            sourceBufferHeight = -1;
+
         }
 
         return CompletableFuture.supplyAsync(() -> {
             try {
+                if (failure != null) {
+                    throw new IOException("Capture failed. Completed PNG frames are preserved in " + spool, failure);
+                }
                 if (framesToEncode.isEmpty()) {
+                    Files.deleteIfExists(spool);
                     return null;
                 }
                 encodeQueuedFrames(outputPath, fps, framesToEncode);
-                System.out.printf("Video saved: %s (%d frames, %d fps, Lossless PNG MOV)\n",
+                // Delete only files created by this recording, after a successful encode.
+                for (Path frame : framesToEncode) Files.deleteIfExists(frame);
+                Files.deleteIfExists(spool);
+                System.out.printf("Video saved: %s (%d frames, %d fps, H.264 MP4)\n",
                         outputPath,
                         framesToEncode.size(),
                         fps);
                 return outputPath;
             } catch (IOException ex) {
-                throw new CompletionException(ex);
+                throw new CompletionException(new IOException("Video export failed; source frames are in " + spool, ex));
             } finally {
-                for (BufferedImage frame : framesToEncode) {
-                    frame.flush();
-                }
                 synchronized (stateLock) {
                     encoding = false;
                     frameCount = 0;
@@ -265,15 +264,6 @@ public final class PanelVideoRecorder {
         }
     }
 
-    private void ensureSourceBuffer(int width, int height) {
-        if (sourceBuffer != null && sourceBufferWidth == width && sourceBufferHeight == height) {
-            return;
-        }
-        sourceBuffer = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
-        sourceBufferWidth = width;
-        sourceBufferHeight = height;
-    }
-
     private void ensureCaptureBuffer(int panelWidth, int panelHeight) {
         if (targetWidth <= 0 || targetHeight <= 0) {
             if (quality != null && quality.isViewportNative()) {
@@ -294,102 +284,13 @@ public final class PanelVideoRecorder {
         captureBuffer = new BufferedImage(targetWidth, targetHeight, BufferedImage.TYPE_INT_RGB);
     }
 
-    private static void renderScaledWithAspectPreserved(BufferedImage source, BufferedImage target) {
-        int srcW = source.getWidth();
-        int srcH = source.getHeight();
-        int dstW = target.getWidth();
-        int dstH = target.getHeight();
-
-        Graphics2D g2 = target.createGraphics();
-        g2.setColor(java.awt.Color.BLACK);
-        g2.fillRect(0, 0, dstW, dstH);
-
-        double scale = Math.min((double) dstW / srcW, (double) dstH / srcH);
-        // Do not upscale the recorded panel image; this preserves sharpness.
-        scale = Math.min(1.0, scale);
-
-        int drawW = Math.max(1, (int) Math.round(srcW * scale));
-        int drawH = Math.max(1, (int) Math.round(srcH * scale));
-        int drawX = (dstW - drawW) / 2;
-        int drawY = (dstH - drawH) / 2;
-
-        if (drawW == srcW && drawH == srcH) {
-            g2.drawImage(source, drawX, drawY, null);
-            g2.dispose();
-            return;
-        }
-
-        BufferedImage scaled = downscaleProgressive(source, drawW, drawH);
-        g2.drawImage(scaled, drawX, drawY, null);
-        g2.dispose();
-    }
-
-    private static BufferedImage downscaleProgressive(BufferedImage source, int targetW, int targetH) {
-        int currentW = source.getWidth();
-        int currentH = source.getHeight();
-        BufferedImage currentImage = source;
-
-        while (currentW / 2 >= targetW && currentH / 2 >= targetH) {
-            int nextW = Math.max(targetW, currentW / 2);
-            int nextH = Math.max(targetH, currentH / 2);
-            BufferedImage nextImage = new BufferedImage(nextW, nextH, BufferedImage.TYPE_INT_RGB);
-            Graphics2D g = nextImage.createGraphics();
-            g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
-            g.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
-            g.drawImage(currentImage, 0, 0, nextW, nextH, null);
-            g.dispose();
-
-            if (currentImage != source) {
-                currentImage.flush();
-            }
-            currentImage = nextImage;
-            currentW = nextW;
-            currentH = nextH;
-        }
-
-        if (currentW == targetW && currentH == targetH) {
-            return currentImage;
-        }
-
-        BufferedImage finalImage = new BufferedImage(targetW, targetH, BufferedImage.TYPE_INT_RGB);
-        Graphics2D g = finalImage.createGraphics();
-        g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);
-        g.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
-        g.drawImage(currentImage, 0, 0, targetW, targetH, null);
-        g.dispose();
-
-        if (currentImage != source) {
-            currentImage.flush();
-        }
-        return finalImage;
-    }
-
     private static int evenDimension(int value) {
         int clamped = Math.max(2, value);
         return (clamped & 1) == 0 ? clamped : clamped - 1;
     }
 
-    private static BufferedImage deepCopyRgb(BufferedImage source) {
-        BufferedImage copy = new BufferedImage(source.getWidth(), source.getHeight(), BufferedImage.TYPE_INT_RGB);
-        Graphics2D graphics = copy.createGraphics();
-        graphics.drawImage(source, 0, 0, null);
-        graphics.dispose();
-        return copy;
-    }
-
-    private static void encodeQueuedFrames(Path outputPath, int fps, List<BufferedImage> frames) throws IOException {
-        SeekableByteChannel encodeChannel = null;
-        SequenceEncoder sequenceEncoder = null;
-        try {
-            encodeChannel = NIOUtils.writableFileChannel(outputPath.toString());
-            sequenceEncoder = new SequenceEncoder(encodeChannel, Rational.R(fps, 1), Format.MOV, Codec.PNG, null);
-            for (BufferedImage frame : frames) {
-                sequenceEncoder.encodeNativeFrame(AWTUtil.fromBufferedImageRGB(frame));
-            }
-            sequenceEncoder.finish();
-        } finally {
-            NIOUtils.closeQuietly(encodeChannel);
-        }
+    private static void encodeQueuedFrames(Path outputPath, int fps, List<Path> frames) throws IOException {
+        H264Mp4Encoder.encode(outputPath, fps, frames);
     }
 
     private static int detectDisplayRefreshRate() {

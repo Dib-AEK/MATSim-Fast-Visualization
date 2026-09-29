@@ -1,6 +1,11 @@
 package com.matsim.viz.ui.editor;
 
 import com.matsim.viz.domain.LinkSegment;
+import com.matsim.viz.ui.SpatialGrid;
+import java.awt.image.BufferedImage;
+import java.util.ArrayDeque;
+import java.util.concurrent.CompletableFuture;
+import com.matsim.viz.ui.map.OsmBackground;
 import com.matsim.viz.domain.NetworkData;
 import com.matsim.viz.domain.NodePoint;
 import org.matsim.api.core.v01.Coord;
@@ -10,8 +15,6 @@ import org.matsim.api.core.v01.network.Network;
 import org.matsim.api.core.v01.network.Node;
 import org.matsim.core.network.NetworkUtils;
 import org.matsim.core.network.io.NetworkWriter;
-import org.matsim.core.utils.geometry.CoordinateTransformation;
-import org.matsim.core.utils.geometry.transformations.TransformationFactory;
 
 import javax.swing.BorderFactory;
 import javax.swing.JLabel;
@@ -23,7 +26,6 @@ import javax.swing.JTextArea;
 import javax.swing.JTextField;
 import javax.swing.SwingConstants;
 import javax.swing.SwingUtilities;
-import javax.swing.Timer;
 import java.awt.BasicStroke;
 import java.awt.Color;
 import java.awt.Dimension;
@@ -81,20 +83,18 @@ public final class NetworkEditorPanel extends JPanel {
     private static final Color NODE_COLOR_DEFAULT = new Color(0xC7CEDD);
     private static final Color SELECTED_LINK = new Color(0xF05D23);
     private static final Color SELECTED_NODE = new Color(0x1FA2FF);
-    private static final int OSM_MAX_VIEWPORT_TILES = 512;
     private static final double VIEWPORT_MARGIN_PIXELS = 80.0;
     private static final double BIDIRECTIONAL_OFFSET_PIXELS = 3.2;
 
-    private final Map<String, NodePoint> nodes = new LinkedHashMap<>();
-    private final Map<String, LinkSegment> links = new LinkedHashMap<>();
-    private final Set<String> directedConnectionKeys = new LinkedHashSet<>();
-    private final Set<String> availableLinkModes = new LinkedHashSet<>();
+    private final Map<String, NodePoint> nodes;
+    private final Map<String, LinkSegment> links;
+    private final Set<String> directedConnectionKeys;
+    private final Set<String> availableLinkModes;
     private final Set<String> visibleLinkModes = new LinkedHashSet<>();
     private final List<String> pendingLinkNodes = new ArrayList<>(2);
     private final List<PickableLink> renderedPickLinks = new ArrayList<>();
-    private final OsmTileCache osmTileCache;
-    private final CoordinateTransformation lv95ToWgs84Transform;
-    private final CoordinateTransformation wgs84ToLv95Transform;
+    private final Path mapCacheDir;
+    private OsmBackground osmBackground;
     private final ExecutorService mutationWorker;
 
     private SelectionListener selectionListener;
@@ -117,34 +117,79 @@ public final class NetworkEditorPanel extends JPanel {
     private Point panDragStart;
 
     private CoordinateSystem coordinateSystem;
-    private final Timer selectionAnimationTimer;
     private Color linkColor = LINK_COLOR;
     private Color nodeColor = NODE_COLOR_DEFAULT;
 
+    public record PreparedNetwork(NetworkData data, Map<String, NodePoint> nodes,
+            Map<String, LinkSegment> links, Set<String> directions, Set<String> modes,
+            Set<String> orphanNodes, SpatialGrid spatialIndex) { }
+
+    /** Prepare off the UI thread, sharing immutable domain objects and the viewer's spatial index. */
+    public static PreparedNetwork prepare(NetworkData data, SpatialGrid index) {
+        Map<String, NodePoint> nodes = new EditableNetworkMap<>(data.getNodes());
+        Map<String, LinkSegment> links = new EditableNetworkMap<>(data.getLinks());
+        Set<String> directions = new LinkedHashSet<>(), modes = new LinkedHashSet<>();
+        Set<String> orphans = new LinkedHashSet<>(nodes.keySet());
+        for (LinkSegment link : links.values()) {
+            directions.add(directedEdgeKey(link.fromNodeId(), link.toNodeId()));
+            modes.addAll(link.allowedModes());
+            orphans.remove(link.fromNodeId()); orphans.remove(link.toNodeId());
+        }
+        return new PreparedNetwork(data, nodes, links, directions, modes, orphans,
+                index == null ? SpatialGrid.build(data) : index);
+    }
+
+    private final SpatialGrid spatialIndex;
+    private final Set<String> changedLinks = new LinkedHashSet<>();
+    private final Set<String> extraNodes;
+    private final Set<String> viewportLinks = new LinkedHashSet<>();
+    private final Set<String> viewportNodes = new LinkedHashSet<>();
+    private final ArrayDeque<Edit> undo = new ArrayDeque<>(), redo = new ArrayDeque<>();
+    private record Edit(Runnable undo, Runnable redo) { }
+    private boolean unsavedChanges, disposed, mapEnabled, editingLocked;
+    public void setEditingLocked(boolean locked) { editingLocked = locked; }
+    private long mapGeneration;
+    private BufferedImage drawingCache;
+    private String drawingKey;
+    private static final int CACHE_MARGIN = 256;
+    private double cachePanX, cachePanY, cacheZoom;
+    private Point pressPoint;
+    private boolean dragMoved, zoomSettling;
+    private final javax.swing.Timer zoomTimer = new javax.swing.Timer(120, e -> {
+        zoomSettling = false; repaint();
+    });
+
     public NetworkEditorPanel(NetworkData data, Path cacheDir) {
-        this.osmTileCache = new OsmTileCache((cacheDir == null ? Path.of("cache") : cacheDir).toAbsolutePath().normalize());
-        this.lv95ToWgs84Transform = tryCreateTransformation("EPSG:2056", "EPSG:4326");
-        this.wgs84ToLv95Transform = tryCreateTransformation("EPSG:4326", "EPSG:2056");
+        this(prepare(data, null), cacheDir);
+    }
+
+    public NetworkEditorPanel(PreparedNetwork prepared, Path cacheDir) {
+
+        this.mapCacheDir = (cacheDir == null ? Path.of("cache") : cacheDir).toAbsolutePath().normalize();
         this.mutationWorker = Executors.newSingleThreadExecutor(runnable -> {
             Thread thread = new Thread(runnable, "network-editor-worker");
             thread.setDaemon(true);
             return thread;
         });
 
-        nodes.putAll(data.getNodes());
-        links.putAll(data.getLinks());
-        rebuildDirectionalIndex();
-        rebuildAvailableModes();
-        recomputeBounds();
-        this.coordinateSystem = detectCoordinateSystem(minX, minY, maxX, maxY);
+        nodes = prepared.nodes(); links = prepared.links();
+        directedConnectionKeys = prepared.directions(); availableLinkModes = prepared.modes();
+        visibleLinkModes.addAll(availableLinkModes);
+        spatialIndex = prepared.spatialIndex(); extraNodes = prepared.orphanNodes();
+        minX = prepared.data().getMinX(); minY = prepared.data().getMinY();
+        maxX = prepared.data().getMaxX(); maxY = prepared.data().getMaxY();
+        this.coordinateSystem = CoordinateSystem.EPSG_2056;
 
+        zoomTimer.setRepeats(false);
         setPreferredSize(new Dimension(1200, 850));
         setBackground(BACKGROUND);
 
         MouseAdapter mouse = new MouseAdapter() {
             @Override
             public void mousePressed(MouseEvent e) {
-                if (e.getButton() == MouseEvent.BUTTON2) {
+                if (editingLocked) return;
+                pressPoint = e.getPoint(); dragMoved = false;
+                if (e.getButton() == MouseEvent.BUTTON2 || e.getButton() == MouseEvent.BUTTON1) {
                     panDragStart = e.getPoint();
                 }
                 if (e.isPopupTrigger()) {
@@ -154,9 +199,9 @@ public final class NetworkEditorPanel extends JPanel {
 
             @Override
             public void mouseReleased(MouseEvent e) {
-                if (e.getButton() == MouseEvent.BUTTON2) {
-                    panDragStart = null;
-                }
+                if (editingLocked) return;
+                panDragStart = null;
+                repaint();
                 if (e.isPopupTrigger()) {
                     showContextMenu(e);
                 }
@@ -164,7 +209,10 @@ public final class NetworkEditorPanel extends JPanel {
 
             @Override
             public void mouseDragged(MouseEvent e) {
+                if (editingLocked) return;
                 if (panDragStart != null) {
+                    if (!dragMoved && pressPoint != null && pressPoint.distance(e.getPoint()) < 4) return;
+                    dragMoved = true;
                     Point current = e.getPoint();
                     int dx = current.x - panDragStart.x;
                     int dy = current.y - panDragStart.y;
@@ -177,12 +225,18 @@ public final class NetworkEditorPanel extends JPanel {
 
             @Override
             public void mouseClicked(MouseEvent e) {
-                if (e.getButton() != MouseEvent.BUTTON1) {
+                if (editingLocked) return;
+                if (e.getButton() != MouseEvent.BUTTON1 || e.isShiftDown() || dragMoved) {
                     return;
                 }
 
                 ensureFitted();
 
+                if (locationPicker != null) {
+                    var picker=locationPicker;locationPicker=null;
+                    picker.accept(screenToWorld(e.getX(),e.getY()));return;
+                }
+                if (!createNodeArmed && !createLinkArmed && selectTransitAt(e.getPoint())) return;
                 if (createNodeArmed) {
                     createNodeAt(screenToWorld(e.getX(), e.getY()));
                     createNodeArmed = false;
@@ -200,10 +254,12 @@ public final class NetworkEditorPanel extends JPanel {
 
             @Override
             public void mouseWheelMoved(MouseWheelEvent e) {
+                if (editingLocked) return;
                 ensureFitted();
+                zoomSettling = true; zoomTimer.restart();
                 Point2D.Double anchorWorld = screenToWorld(e.getX(), e.getY());
-                double factor = e.getWheelRotation() < 0 ? 1.12 : 0.89;
-                zoom = Math.max(0.2, Math.min(80.0, zoom * factor));
+                double factor = Math.pow(1.15, -e.getPreciseWheelRotation());
+                zoom = Math.max(0.05, Math.min(Math.max(2048, 24 / baseScale), zoom * factor));
 
                 Point2D.Double after = worldToScreen(anchorWorld.x, anchorWorld.y);
                 panX += e.getX() - after.x;
@@ -216,12 +272,69 @@ public final class NetworkEditorPanel extends JPanel {
         addMouseMotionListener(mouse);
         addMouseWheelListener(mouse);
 
-        selectionAnimationTimer = new Timer(33, e -> {
-            if (selectedLinkId != null) {
-                repaint();
+
+    }
+
+    public record TransitStopMarker(String id, String name, double x, double y) { }
+    public record TransitPath(String line, String route, List<String> links, List<TransitStopMarker> stops) { }
+    private List<TransitPath> transitPaths = List.of();
+    private String highlightedLine, highlightedRoute;
+    private boolean showTransit;
+    private java.util.function.BiConsumer<String,String> transitSelection;
+    private java.util.function.Consumer<Point2D.Double> locationPicker;
+
+    public void setTransitOverlay(List<TransitPath> paths, String line, String route, boolean visible,
+            java.util.function.BiConsumer<String,String> onSelect) {
+        transitPaths = List.copyOf(paths); highlightedLine=line; highlightedRoute=route;
+        showTransit=visible; transitSelection=onSelect; drawingCache=null; repaint();
+    }
+    public void pickLocation(java.util.function.Consumer<Point2D.Double> callback) {
+        cancelTool(); locationPicker=callback;
+    }
+    public String selectedLinkId() { return selectedLinkId; }
+    public LinkSegment linkById(String id) { return links.get(id); }
+    public Map<String,LinkSegment> linksById(java.util.Collection<String> ids) {
+        Map<String,LinkSegment> found=new HashMap<>();for(String id:ids){var link=links.get(id);if(link!=null)found.put(id,link);}return found;
+    }
+    public void centreOn(double x, double y) {
+        ensureFitted(); panX=getWidth()/2.0-(x-minX)*baseScale*zoom;
+        panY=getHeight()/2.0-(y-minY)*baseScale*zoom; repaint();
+    }
+    private void drawTransitOverlay(Graphics2D g) {
+        if (!showTransit) return;
+        for (TransitPath path:transitPaths) {
+            boolean chosen=path.line().equals(highlightedLine);
+            g.setColor(chosen ? new Color(0xFFBC42) : new Color(80,180,240,110));
+            g.setStroke(new BasicStroke(chosen?4f:1.5f,BasicStroke.CAP_ROUND,BasicStroke.JOIN_ROUND));
+            for (String id:path.links()) {
+                LinkSegment link=links.get(id); if(link==null)continue;
+                var a=worldToScreen(link.fromX(),link.fromY()); var b=worldToScreen(link.toX(),link.toY());
+                if (g.getClipBounds()==null || g.getClipBounds().intersectsLine(a.x,a.y,b.x,b.y))
+                    g.draw(new java.awt.geom.Line2D.Double(a,b));
             }
-        });
-        selectionAnimationTimer.start();
+            if(chosen && (highlightedRoute==null || path.route().equals(highlightedRoute))) {
+                int index=0;
+                for(TransitStopMarker stop:path.stops()) {
+                    var p=worldToScreen(stop.x(),stop.y());index++;
+                    if(p.x < -CACHE_MARGIN || p.y < -CACHE_MARGIN || p.x > getWidth()+CACHE_MARGIN || p.y > getHeight()+CACHE_MARGIN)continue;
+                    g.setColor(Color.WHITE);g.fillOval((int)p.x-5,(int)p.y-5,10,10);
+                    g.setColor(new Color(0xEF7B26));g.drawOval((int)p.x-5,(int)p.y-5,10,10);
+                    g.drawString(index+" "+(stop.name()==null?stop.id():stop.name()),(int)p.x+8,(int)p.y-8);
+                }
+            }
+        }
+    }
+    private boolean selectTransitAt(Point click) {
+        if(!showTransit || transitSelection==null)return false;
+        TransitPath best=null;double distance=7;
+        for(TransitPath path:transitPaths) for(String id:path.links()) {
+            LinkSegment link=links.get(id);if(link==null)continue;
+            var a=worldToScreen(link.fromX(),link.fromY());var b=worldToScreen(link.toX(),link.toY());
+            double d=pointToSegmentDistance(click.x,click.y,a.x,a.y,b.x,b.y);
+            if(d<distance){distance=d;best=path;}
+        }
+        if(best==null)return false;
+        transitSelection.accept(best.line(),best.route());return true;
     }
 
     public void setSelectionListener(SelectionListener selectionListener) {
@@ -244,7 +357,7 @@ public final class NetworkEditorPanel extends JPanel {
     }
 
     public boolean hasGeoCoordinates() {
-        return resolvedCoordinateSystem() != CoordinateSystem.NONE;
+        return mapEnabled && resolvedCoordinateSystem() != CoordinateSystem.NONE;
     }
 
     public CoordinateSystem getCoordinateSystem() {
@@ -252,8 +365,47 @@ public final class NetworkEditorPanel extends JPanel {
     }
 
     public void setCoordinateSystem(CoordinateSystem coordinateSystem) {
-        this.coordinateSystem = coordinateSystem == null ? CoordinateSystem.AUTO : coordinateSystem;
+        this.coordinateSystem = coordinateSystem == null ? CoordinateSystem.EPSG_2056 : coordinateSystem;
+        prepareMap();
+        drawingCache = null;
         repaint();
+    }
+
+    public void setMapBackgroundEnabled(boolean enabled) {
+        mapEnabled = enabled;
+        prepareMap();
+    }
+
+    private void prepareMap() {
+        long generation = ++mapGeneration;
+        if (osmBackground != null) osmBackground.close();
+        osmBackground = null; drawingCache = null;
+        CoordinateSystem crs = resolvedCoordinateSystem();
+        if (!mapEnabled || crs == CoordinateSystem.NONE || disposed) { repaint(); return; }
+        mutationWorker.submit(() -> {
+            try {
+                OsmBackground map = new OsmBackground(crs == CoordinateSystem.EPSG_2056 ? "EPSG:2056" : "EPSG:4326", mapCacheDir);
+                SwingUtilities.invokeLater(() -> {
+                    if (disposed || generation != mapGeneration) { map.close(); return; }
+                    osmBackground = map; drawingCache = null; repaint();
+                });
+            } catch (RuntimeException ex) {
+                SwingUtilities.invokeLater(() -> {
+                    if (!disposed && generation == mapGeneration)
+                        JOptionPane.showMessageDialog(this, ex.getMessage(), "Map unavailable", JOptionPane.WARNING_MESSAGE);
+                });
+            }
+        });
+    }
+
+    public void setActive(boolean active) {
+        drawingCache = null;
+        renderedPickLinks.clear(); viewportLinks.clear(); viewportNodes.clear();
+        if (!active) {
+            ++mapGeneration;
+            if (osmBackground != null) osmBackground.close();
+            osmBackground = null;
+        } else if (mapEnabled) prepareMap();
     }
 
     public List<String> availableLinkModes() {
@@ -302,13 +454,24 @@ public final class NetworkEditorPanel extends JPanel {
         }
     }
 
-    public SaveSummary saveNetwork(Path outputFile) {
+    public SaveSummary saveNetwork(Path outputFile) { return snapshotForSave().write(outputFile); }
+
+    private static SaveSummary writeNetwork(Map<String, NodePoint> nodes, Map<String, LinkSegment> links, Path outputFile) {
         try {
             Files.createDirectories(outputFile.toAbsolutePath().normalize().getParent());
-        } catch (Exception ignored) {
-            // Parent may be null or already exists.
+        } catch (java.io.IOException ex) {
+            throw new IllegalStateException("Cannot create output directory", ex);
         }
 
+        for (NodePoint node : nodes.values()) {
+            if (!Double.isFinite(node.x()) || !Double.isFinite(node.y()))
+                throw new IllegalArgumentException("Invalid coordinates at node " + node.id());
+        }
+        for (LinkSegment link : links.values()) {
+            validateNumbers(link.length(), link.freeSpeed(), link.lanes(), Double.parseDouble(link.attributes().getOrDefault("capacity", "900")));
+            if (!nodes.containsKey(link.fromNodeId()) || !nodes.containsKey(link.toNodeId()))
+                throw new IllegalArgumentException("Link " + link.id() + " refers to a missing node");
+        }
         Network network = NetworkUtils.createNetwork();
         for (NodePoint node : nodes.values()) {
             Node matsimNode = NetworkUtils.createAndAddNode(
@@ -345,8 +508,127 @@ public final class NetworkEditorPanel extends JPanel {
             });
         }
 
-        new NetworkWriter(network).write(outputFile.toAbsolutePath().normalize().toString());
+        // Write beside the destination, then replace it only after the native writer succeeds.
+        Path target = outputFile.toAbsolutePath().normalize();
+        Path temporary = null;
+        try {
+            temporary = Files.createTempFile(target.getParent(), ".network-editor-", target.toString().endsWith(".gz") ? ".xml.gz" : ".xml");
+            new NetworkWriter(network).write(temporary.toString());
+            try {
+                Files.move(temporary, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING, java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+            } catch (java.nio.file.AtomicMoveNotSupportedException ex) {
+                Files.move(temporary, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            }
+        } catch (java.io.IOException ex) {
+            throw new IllegalStateException("Could not save network: " + ex.getMessage(), ex);
+        } finally {
+            if (temporary != null) try { Files.deleteIfExists(temporary); } catch (java.io.IOException ignored) { }
+        }
         return new SaveSummary(nodes.size(), links.size(), outputFile.toAbsolutePath().normalize());
+    }
+
+    public boolean hasUnsavedChanges() { return unsavedChanges; }
+    public boolean canUndo() { return !undo.isEmpty(); }
+    public boolean canRedo() { return !redo.isEmpty(); }
+    public void markSaved() { unsavedChanges = false; notifySelectionChanged(); }
+
+    private void remember(Runnable backwards, Runnable forwards) {
+        undo.addLast(new Edit(backwards, forwards));
+        if (undo.size() > 50) undo.removeFirst();
+        redo.clear(); unsavedChanges = true; drawingCache = null;
+    }
+
+    public void undo() {
+        if (undo.isEmpty()) return;
+        Edit edit = undo.removeLast(); edit.undo().run(); redo.addLast(edit); afterHistoryChange();
+    }
+
+    public void redo() {
+        if (redo.isEmpty()) return;
+        Edit edit = redo.removeLast(); edit.redo().run(); undo.addLast(edit); afterHistoryChange();
+    }
+
+    private void afterHistoryChange() {
+        unsavedChanges = true;
+        selectedLinkId = null; selectedNodeId = null;
+        scheduleDerivedRebuild(); notifySelectionChanged(); repaint();
+    }
+
+    public void fitNetwork() { recomputeBounds(); drawingCache = null; repaint(); }
+    public void cancelTool() {
+        locationPicker = null;
+        createNodeArmed = false; createLinkArmed = false; pendingLinkNodes.clear();
+        drawingCache = null; repaint();
+    }
+
+    /** Exact IDs avoid ambiguous matches; the chosen transport filters are expanded if necessary. */
+    public boolean findById(String id, boolean node) {
+        ensureFitted();
+        double x, y;
+        if (node) {
+            NodePoint selected = nodes.get(id); if (selected == null) return false;
+            selectedNodeId = id; selectedLinkId = null; extraNodes.add(id);
+            x = selected.x(); y = selected.y();
+        } else {
+            LinkSegment selected = links.get(id); if (selected == null) return false;
+            selectedLinkId = id; selectedNodeId = null;
+            visibleLinkModes.addAll(selected.allowedModes());
+            x = (selected.fromX()+selected.toX())/2; y = (selected.fromY()+selected.toY())/2;
+        }
+        zoom = Math.max(zoom, Math.min(2048, 2 / baseScale));
+        panX = getWidth()/2.0 - (x-minX)*baseScale*zoom;
+        panY = getHeight()/2.0 - (y-minY)*baseScale*zoom;
+        notifySelectionChanged(); repaint(); return true;
+    }
+
+    public void updateLink(String id, double length, double speedKmh, double lanes, double capacity, Set<String> modes) {
+        LinkSegment before = links.get(id);
+        if (before == null) throw new IllegalArgumentException("Link does not exist: " + id);
+        validateNumbers(length, speedKmh, lanes, capacity);
+        if (modes == null || modes.isEmpty() || modes.stream().anyMatch(m -> m == null || m.isBlank()))
+            throw new IllegalArgumentException("Choose at least one allowed mode");
+        Map<String,String> attrs = new LinkedHashMap<>(before.attributes());
+        attrs.put("capacity", Double.toString(capacity));
+        LinkSegment after = new LinkSegment(id,before.fromNodeId(),before.toNodeId(),before.fromX(),before.fromY(),
+                before.toX(),before.toY(),length,speedKmh/3.6,lanes,Set.copyOf(modes),attrs);
+        replaceLink(before, after);
+    }
+
+    public void createReverseLink(String id) {
+        if (!hasSelectedLink()) throw new IllegalArgumentException("Select the road direction to copy first");
+        if (id == null || id.isBlank() || links.containsKey(id.trim()))
+            throw new IllegalArgumentException("Enter a new, unique link ID");
+        LinkSegment source = links.get(selectedLinkId);
+        LinkSegment reverse = new LinkSegment(id.trim(),source.toNodeId(),source.fromNodeId(),
+                source.toX(),source.toY(),source.fromX(),source.fromY(),source.length(),source.freeSpeed(),
+                source.lanes(),source.allowedModes(),source.attributes());
+        links.put(reverse.id(),reverse); changedLinks.add(reverse.id());
+        remember(() -> links.remove(reverse.id()), () -> links.put(reverse.id(),reverse));
+        selectedLinkId = reverse.id(); selectedNodeId = null;
+        scheduleDerivedRebuild(); notifySelectionChanged(); repaint();
+    }
+
+    private void replaceLink(LinkSegment before, LinkSegment after) {
+        links.put(after.id(), after); changedLinks.add(after.id());
+        remember(() -> links.put(before.id(), before), () -> links.put(after.id(), after));
+        visibleLinkModes.addAll(after.allowedModes());
+        scheduleDerivedRebuild(); notifySelectionChanged(); repaint();
+    }
+
+    private static void validateNumbers(double length, double speed, double lanes, double capacity) {
+        if (!Double.isFinite(length) || length <= 0 || !Double.isFinite(speed) || speed <= 0
+                || !Double.isFinite(lanes) || lanes <= 0 || !Double.isFinite(capacity) || capacity < 0)
+            throw new IllegalArgumentException("Length, speed and lanes must be positive and finite; capacity must be nonnegative.");
+    }
+
+    public record SaveSnapshot(Map<String, NodePoint> nodes, Map<String, LinkSegment> links) {
+        public SaveSummary write(Path output) {
+            return writeNetwork(nodes, links, output);
+        }
+    }
+    /** Call on EDT, then write the immutable snapshot on a worker. */
+    public SaveSnapshot snapshotForSave() {
+        return new SaveSnapshot(new LinkedHashMap<>(nodes), new LinkedHashMap<>(links));
     }
 
     public boolean hasSelectedNode() {
@@ -362,7 +644,9 @@ public final class NetworkEditorPanel extends JPanel {
             return false;
         }
 
-        links.remove(selectedLinkId);
+        LinkSegment removed = links.remove(selectedLinkId);
+        changedLinks.add(removed.id()); extraNodes.add(removed.fromNodeId()); extraNodes.add(removed.toNodeId());
+        remember(() -> links.put(removed.id(), removed), () -> links.remove(removed.id()));
         scheduleDerivedRebuild();
         selectedLinkId = null;
         notifySelectionChanged();
@@ -377,7 +661,7 @@ public final class NetworkEditorPanel extends JPanel {
 
         String removedNodeId = selectedNodeId;
         selectedNodeId = null;
-        nodes.remove(removedNodeId);
+        NodePoint removedNode = nodes.remove(removedNodeId);
 
         int removedLinks = 0;
         List<String> toRemove = new ArrayList<>();
@@ -386,10 +670,16 @@ public final class NetworkEditorPanel extends JPanel {
                 toRemove.add(link.id());
             }
         }
+        Map<String, LinkSegment> removed = new LinkedHashMap<>();
         for (String id : toRemove) {
-            links.remove(id);
+            LinkSegment link = links.remove(id);
+            removed.put(id, link); changedLinks.add(id);
+            extraNodes.add(link.fromNodeId()); extraNodes.add(link.toNodeId());
             removedLinks++;
         }
+        extraNodes.add(removedNodeId);
+        remember(() -> { nodes.put(removedNodeId, removedNode); links.putAll(removed); },
+                () -> { nodes.remove(removedNodeId); removed.keySet().forEach(links::remove); });
         scheduleDerivedRebuild();
         if (selectedLinkId != null && !links.containsKey(selectedLinkId)) {
             selectedLinkId = null;
@@ -409,8 +699,9 @@ public final class NetworkEditorPanel extends JPanel {
         LinkSegment existing = links.get(selectedLinkId);
         String initialCapacity = existing.attributes().getOrDefault("capacity", "900.0");
         JTextField lengthField = new JTextField(String.format(Locale.ROOT, "%.2f", existing.length()));
-        JTextField freeSpeedField = new JTextField(String.format(Locale.ROOT, "%.6f", existing.freeSpeed()));
+        JTextField freeSpeedField = new JTextField(String.format(Locale.ROOT, "%.6f", existing.freeSpeed() * 3.6));
         JTextField lanesField = new JTextField(String.format(Locale.ROOT, "%.3f", existing.lanes()));
+        JTextField modesField = new JTextField(String.join(",", existing.allowedModes()));
         JTextField capacityField = new JTextField(initialCapacity);
         JTextField typeField = new JTextField(existing.attributes().getOrDefault("type", ""));
         JTextField onewayField = new JTextField(existing.attributes().getOrDefault("oneway", ""));
@@ -423,15 +714,17 @@ public final class NetworkEditorPanel extends JPanel {
         panel.add(new JLabel("Direction: " + existing.fromNodeId() + " -> " + existing.toNodeId()));
         panel.add(new JLabel("Length (m)"));
         panel.add(lengthField);
-        panel.add(new JLabel("Free speed (m/s)"));
+        panel.add(new JLabel("Free speed (km/h)"));
         panel.add(freeSpeedField);
         panel.add(new JLabel("Lanes"));
         panel.add(lanesField);
+        panel.add(new JLabel("Allowed modes (comma-separated)"));
+        panel.add(modesField);
         panel.add(new JLabel("Capacity (veh/h)"));
         panel.add(capacityField);
         panel.add(new JLabel("Type (optional)"));
         panel.add(typeField);
-        panel.add(new JLabel("Oneway (optional)"));
+        panel.add(new JLabel("Oneway tag (metadata only; reverse links are edited separately)"));
         panel.add(onewayField);
         panel.add(new JLabel("Extra attributes patch (key=value, optional)"));
         panel.add(attrsPatchArea);
@@ -446,12 +739,13 @@ public final class NetworkEditorPanel extends JPanel {
         double lanes;
         double capacity;
         try {
-            length = Math.max(0.01, Double.parseDouble(trimToEmpty(lengthField.getText())));
-            freeSpeed = Math.max(0.01, Double.parseDouble(trimToEmpty(freeSpeedField.getText())));
-            lanes = Math.max(0.1, Double.parseDouble(trimToEmpty(lanesField.getText())));
-            capacity = Math.max(0.0, Double.parseDouble(trimToEmpty(capacityField.getText())));
-        } catch (NumberFormatException ex) {
-            JOptionPane.showMessageDialog(this, "Length, free speed, lanes and capacity must be numeric.", "Invalid Link", JOptionPane.WARNING_MESSAGE);
+            length = Double.parseDouble(trimToEmpty(lengthField.getText()));
+            freeSpeed = Double.parseDouble(trimToEmpty(freeSpeedField.getText())) / 3.6;
+            lanes = Double.parseDouble(trimToEmpty(lanesField.getText()));
+            capacity = Double.parseDouble(trimToEmpty(capacityField.getText()));
+            validateNumbers(length, freeSpeed, lanes, capacity);
+        } catch (IllegalArgumentException ex) {
+            JOptionPane.showMessageDialog(this, ex.getMessage(), "Invalid Link", JOptionPane.WARNING_MESSAGE);
             return false;
         }
 
@@ -478,6 +772,7 @@ public final class NetworkEditorPanel extends JPanel {
             }
             attrs.put(key, value);
         });
+        attrs.put("capacity", Double.toString(capacity));
 
         LinkSegment edited = new LinkSegment(
                 existing.id(),
@@ -490,11 +785,11 @@ public final class NetworkEditorPanel extends JPanel {
                 length,
                 freeSpeed,
                 lanes,
-                existing.allowedModes(),
+                parseModes(modesField.getText()),
                 attrs
         );
 
-        links.put(edited.id(), edited);
+        replaceLink(existing, edited);
         selectedLinkId = edited.id();
         selectedNodeId = null;
         notifySelectionChanged();
@@ -503,8 +798,13 @@ public final class NetworkEditorPanel extends JPanel {
     }
 
     public void disposeResources() {
-        selectionAnimationTimer.stop();
-        osmTileCache.close();
+        disposed = true;
+        zoomTimer.stop();
+        ++mapGeneration;
+        drawingCache = null;
+        transitPaths = List.of(); transitSelection=null; locationPicker=null;
+        undo.clear(); redo.clear();
+        if (osmBackground != null) osmBackground.close();
         mutationWorker.shutdownNow();
     }
 
@@ -517,118 +817,74 @@ public final class NetworkEditorPanel extends JPanel {
 
         ensureFitted();
 
-        Graphics2D g2 = (Graphics2D) g.create();
+        String key = getWidth()+":"+getHeight()+":"+baseScale
+                +":"+selectedLinkId+":"+selectedNodeId+":"+visibleLinkModes.hashCode()+":"+linkColor+":"+nodeColor;
+        if (drawingCache != null && key.equals(drawingKey)
+                && ((cacheZoom == zoom && Math.abs(panX-cachePanX) <= CACHE_MARGIN && Math.abs(panY-cachePanY) <= CACHE_MARGIN)
+                    || zoomSettling)) {
+            drawCachedView((Graphics2D) g);
+            drawModeStatus((Graphics2D) g);
+            return;
+        }
+        drawingKey = key;
+        cachePanX = panX; cachePanY = panY; cacheZoom = zoom;
+        drawingCache = new BufferedImage(getWidth()+2*CACHE_MARGIN, getHeight()+2*CACHE_MARGIN, BufferedImage.TYPE_INT_RGB);
+        Graphics2D g2 = drawingCache.createGraphics();
         g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
         g2.setColor(BACKGROUND);
-        g2.fillRect(0, 0, getWidth(), getHeight());
+        g2.fillRect(0, 0, drawingCache.getWidth(), drawingCache.getHeight());
+        g2.translate(CACHE_MARGIN, CACHE_MARGIN);
 
-        ViewportBounds viewportBounds = computeViewportBounds(VIEWPORT_MARGIN_PIXELS);
+        ViewportBounds viewportBounds = computeViewportBounds(VIEWPORT_MARGIN_PIXELS + CACHE_MARGIN);
         Map<String, Double> nodeWidthCaps = new HashMap<>();
 
         if (resolvedCoordinateSystem() != CoordinateSystem.NONE) {
             drawOsmBackground(g2);
         }
 
+        viewportLinks.clear(); viewportNodes.clear();
+        spatialIndex.query(viewportBounds.minX(), viewportBounds.minY(), viewportBounds.maxX(), viewportBounds.maxY(), viewportLinks);
+        viewportLinks.addAll(changedLinks);
+        viewportNodes.addAll(extraNodes);
         drawLinks(g2, viewportBounds, nodeWidthCaps);
         drawNodes(g2, viewportBounds, nodeWidthCaps);
-        drawModeStatus(g2);
+        drawTransitOverlay(g2);
+
 
         g2.dispose();
+        drawCachedView((Graphics2D) g);
+        drawModeStatus((Graphics2D) g);
+    }
+
+    private void drawCachedView(Graphics2D graphics) {
+        Graphics2D g = (Graphics2D) graphics.create();
+        double ratio = zoom/cacheZoom;
+        g.translate(panX-ratio*cachePanX, getHeight()*(1-ratio)+ratio*cachePanY-panY);
+        g.scale(ratio,ratio);
+        g.drawImage(drawingCache,-CACHE_MARGIN,-CACHE_MARGIN,null);
+        g.dispose();
+        if (osmBackground != null) osmBackground.drawAttribution(graphics,getWidth(),getHeight());
     }
 
     private void drawOsmBackground(Graphics2D g2) {
-        CoordinateSystem crs = resolvedCoordinateSystem();
-        if (crs == CoordinateSystem.NONE) {
-            return;
+        if (mapEnabled && osmBackground != null) {
+            Graphics2D mapGraphics = (Graphics2D) g2.create();
+            mapGraphics.translate(-CACHE_MARGIN,-CACHE_MARGIN);
+            osmBackground.draw(mapGraphics, getWidth()+2*CACHE_MARGIN, getHeight()+2*CACHE_MARGIN,
+                    (x,y)->screenToWorld(x-CACHE_MARGIN,y-CACHE_MARGIN),
+                    (x,y)-> { var point=worldToScreen(x,y); return new Point2D.Double(point.x+CACHE_MARGIN,point.y+CACHE_MARGIN); },
+                    () -> { drawingCache = null; repaint(); });
+            mapGraphics.dispose();
         }
-
-        Point2D.Double topLeft = screenToWorld(0, 0);
-        Point2D.Double bottomRight = screenToWorld(getWidth(), getHeight());
-
-        Point2D.Double topLeftLonLat = worldToLonLat(topLeft.x, topLeft.y, crs);
-        Point2D.Double bottomRightLonLat = worldToLonLat(bottomRight.x, bottomRight.y, crs);
-        if (topLeftLonLat == null || bottomRightLonLat == null) {
-            return;
-        }
-
-        double minLon = Math.min(topLeftLonLat.x, bottomRightLonLat.x);
-        double maxLon = Math.max(topLeftLonLat.x, bottomRightLonLat.x);
-        double minLat = Math.max(-85.0511, Math.min(topLeftLonLat.y, bottomRightLonLat.y));
-        double maxLat = Math.min(85.0511, Math.max(topLeftLonLat.y, bottomRightLonLat.y));
-
-        if (maxLon <= minLon || maxLat <= minLat) {
-            return;
-        }
-
-        int zoomLevel = estimateTileZoom(minLon, maxLon);
-        double tileXMin = lonToTileX(minLon, zoomLevel);
-        double tileXMax = lonToTileX(maxLon, zoomLevel);
-        double tileYMin = latToTileY(maxLat, zoomLevel);
-        double tileYMax = latToTileY(minLat, zoomLevel);
-
-        int xStart = (int) Math.floor(tileXMin);
-        int xEnd = (int) Math.floor(tileXMax);
-        int yStart = (int) Math.floor(tileYMin);
-        int yEnd = (int) Math.floor(tileYMax);
-
-        long tileCount = (long) (xEnd - xStart + 1) * (long) (yEnd - yStart + 1);
-        if (tileCount <= 0 || tileCount > OSM_MAX_VIEWPORT_TILES) {
-            return;
-        }
-
-        List<BufferedTile> readyTiles = new ArrayList<>((xEnd - xStart + 1) * (yEnd - yStart + 1));
-        boolean allTilesReady = true;
-
-        for (int tileX = xStart; tileX <= xEnd; tileX++) {
-            for (int tileY = yStart; tileY <= yEnd; tileY++) {
-                BufferedTile tile = new BufferedTile(tileX, tileY, osmTileCache.getTile(zoomLevel, tileX, tileY, this));
-                if (tile.image == null) {
-                    allTilesReady = false;
-                    continue;
-                }
-
-                readyTiles.add(tile);
-            }
-        }
-
-        if (!allTilesReady || readyTiles.isEmpty()) {
-            return;
-        }
-
-        g2.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
-        for (BufferedTile tile : readyTiles) {
-                double lonLeft = tileXToLon(tile.tileX, zoomLevel);
-                double lonRight = tileXToLon(tile.tileX + 1, zoomLevel);
-                double latTop = tileYToLat(tile.tileY, zoomLevel);
-                double latBottom = tileYToLat(tile.tileY + 1, zoomLevel);
-
-                Point2D.Double worldTopLeft = lonLatToWorld(lonLeft, latTop, crs);
-                Point2D.Double worldBottomRight = lonLatToWorld(lonRight, latBottom, crs);
-                if (worldTopLeft == null || worldBottomRight == null) {
-                    continue;
-                }
-
-                Point2D.Double a = worldToScreen(worldTopLeft.x, worldTopLeft.y);
-                Point2D.Double b = worldToScreen(worldBottomRight.x, worldBottomRight.y);
-
-                int x1 = (int) Math.floor(Math.min(a.x, b.x));
-                int y1 = (int) Math.floor(Math.min(a.y, b.y));
-                int x2 = (int) Math.ceil(Math.max(a.x, b.x));
-                int y2 = (int) Math.ceil(Math.max(a.y, b.y));
-                int w = Math.max(1, x2 - x1 + 1);
-                int h = Math.max(1, y2 - y1 + 1);
-                g2.drawImage(tile.image, x1, y1, w, h, null);
-        }
-
-        g2.setColor(new Color(0, 0, 0, 38));
-        g2.fillRect(0, 0, getWidth(), getHeight());
     }
 
     private void drawLinks(Graphics2D g2, ViewportBounds viewportBounds, Map<String, Double> nodeWidthCaps) {
         g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_OFF);
         renderedPickLinks.clear();
 
-        for (LinkSegment link : links.values()) {
+        for (String id : viewportLinks) {
+            LinkSegment link = links.get(id);
+            if (link == null) continue;
             if (!intersectsViewport(link, viewportBounds)) {
                 continue;
             }
@@ -640,10 +896,11 @@ public final class NetworkEditorPanel extends JPanel {
             Point2D.Double to = worldToScreen(link.toX(), link.toY());
             double strokeWidth = linkStrokeWidth(link);
             double offsetSign = bidirectionalOffsetSign(link);
-            Point2D.Double shiftedFrom = applyPerpendicularOffset(from, to, offsetSign * BIDIRECTIONAL_OFFSET_PIXELS);
-            Point2D.Double shiftedTo = applyPerpendicularOffset(to, from, offsetSign * BIDIRECTIONAL_OFFSET_PIXELS);
+            Point2D.Double shiftedFrom = applyPerpendicularOffset(from, to, offsetSign * Math.min(BIDIRECTIONAL_OFFSET_PIXELS, baseScale * zoom * 3.5));
+            Point2D.Double shiftedTo = applyPerpendicularOffset(to, from, -offsetSign * Math.min(BIDIRECTIONAL_OFFSET_PIXELS, baseScale * zoom * 3.5));
             renderedPickLinks.add(new PickableLink(link.id(), shiftedFrom.x, shiftedFrom.y, shiftedTo.x, shiftedTo.y));
 
+            viewportNodes.add(link.fromNodeId()); viewportNodes.add(link.toNodeId());
             nodeWidthCaps.merge(link.fromNodeId(), strokeWidth, Math::max);
             nodeWidthCaps.merge(link.toNodeId(), strokeWidth, Math::max);
 
@@ -661,43 +918,21 @@ public final class NetworkEditorPanel extends JPanel {
     }
 
     private void drawSelectedLinkFlow(Graphics2D g2, Point2D.Double from, Point2D.Double to) {
-        double dx = to.x - from.x;
-        double dy = to.y - from.y;
-        double length = Math.hypot(dx, dy);
-        if (length < 2.0) {
-            return;
-        }
-
-        double ux = dx / length;
-        double uy = dy / length;
-
-        double spacing = 26.0;
-        double pulseLength = 13.0;
-        double head = (System.nanoTime() / 17_000_000.0) % spacing;
-
-        g2.setStroke(new BasicStroke(2.3f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
-        for (double tip = head; tip <= length + pulseLength; tip += spacing) {
-            double start = Math.max(0.0, tip - pulseLength);
-            double end = Math.min(length, tip);
-            if (end <= start) {
-                continue;
-            }
-
-            double sx = from.x + ux * start;
-            double sy = from.y + uy * start;
-            double ex = from.x + ux * end;
-            double ey = from.y + uy * end;
-
-            double pulseRatio = (end - start) / pulseLength;
-            int alpha = (int) Math.round(90 + 140 * Math.max(0.0, Math.min(1.0, pulseRatio)));
-            g2.setColor(new Color(0x55, 0xE4, 0xFF, alpha));
-            g2.drawLine((int) Math.round(sx), (int) Math.round(sy), (int) Math.round(ex), (int) Math.round(ey));
-        }
+        double dx = to.x-from.x, dy = to.y-from.y, length = Math.hypot(dx, dy);
+        if (length < 8) return;
+        double t = Math.max(0.1, Math.min(0.9,
+                ((getWidth()/2.0-from.x)*dx+(getHeight()/2.0-from.y)*dy)/(length*length)));
+        double x=from.x+t*dx, y=from.y+t*dy, ux=dx/length, uy=dy/length;
+        g2.setColor(new Color(0x55E4FF)); g2.setStroke(new BasicStroke(2));
+        for (int side : new int[]{-1,1})
+            g2.draw(new java.awt.geom.Line2D.Double(x-ux*10-uy*5*side, y-uy*10+ux*5*side, x, y));
     }
 
     private void drawNodes(Graphics2D g2, ViewportBounds viewportBounds, Map<String, Double> nodeWidthCaps) {
         g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_OFF);
-        for (NodePoint node : nodes.values()) {
+        for (String id : viewportNodes) {
+            NodePoint node = nodes.get(id);
+            if (node == null) continue;
             if (!viewportBounds.contains(node.x(), node.y())) {
                 continue;
             }
@@ -705,10 +940,11 @@ public final class NetworkEditorPanel extends JPanel {
             Point2D.Double p = worldToScreen(node.x(), node.y());
             boolean selected = node.id().equals(selectedNodeId);
             boolean pending = pendingLinkNodes.contains(node.id());
-            if (!selected && !pending && !nodeWidthCaps.containsKey(node.id())) {
+            if (!selected && !pending && !nodeWidthCaps.containsKey(node.id()) && !extraNodes.contains(node.id())) {
                 continue;
             }
 
+            if (!selected && !pending && !createLinkArmed && baseScale * zoom < 0.4) continue;
             double linkWidthCap = Math.max(1.0, nodeWidthCaps.getOrDefault(node.id(), 2.2));
             double preferredRadius = selected ? linkWidthCap * 0.95 : (pending ? linkWidthCap * 0.75 : linkWidthCap * 0.55);
             double radius = Math.max(0.9, Math.min(linkWidthCap, preferredRadius));
@@ -811,7 +1047,8 @@ public final class NetworkEditorPanel extends JPanel {
         }
 
         NodePoint node = new NodePoint(nodeId, world.x, world.y);
-        nodes.put(node.id(), node);
+        nodes.put(node.id(), node); extraNodes.add(node.id());
+        remember(() -> nodes.remove(node.id()), () -> nodes.put(node.id(), node));
         selectedNodeId = node.id();
         selectedLinkId = null;
         if (nodes.size() == 1) {
@@ -835,7 +1072,7 @@ public final class NetworkEditorPanel extends JPanel {
 
         JTextField idField = new JTextField();
         JTextField lengthField = new JTextField(String.format(Locale.ROOT, "%.2f", defaultLength));
-        JTextField freeSpeedField = new JTextField("13.89");
+        JTextField freeSpeedField = new JTextField("50.0");
         JTextField lanesField = new JTextField("1.0");
         JTextField modesField = new JTextField("car");
         JTextField capacityField = new JTextField("900.0");
@@ -850,7 +1087,7 @@ public final class NetworkEditorPanel extends JPanel {
         panel.add(idField);
         panel.add(new JLabel("Length (m)"));
         panel.add(lengthField);
-        panel.add(new JLabel("Free speed (m/s)"));
+        panel.add(new JLabel("Free speed (km/h)"));
         panel.add(freeSpeedField);
         panel.add(new JLabel("Lanes"));
         panel.add(lanesField);
@@ -883,12 +1120,13 @@ public final class NetworkEditorPanel extends JPanel {
         double lanes;
         double capacity;
         try {
-            length = Math.max(0.01, Double.parseDouble(trimToEmpty(lengthField.getText())));
-            freeSpeed = Math.max(0.01, Double.parseDouble(trimToEmpty(freeSpeedField.getText())));
-            lanes = Math.max(0.1, Double.parseDouble(trimToEmpty(lanesField.getText())));
-            capacity = Math.max(0.0, Double.parseDouble(trimToEmpty(capacityField.getText())));
-        } catch (NumberFormatException ex) {
-            JOptionPane.showMessageDialog(this, "Length, free speed, lanes and capacity must be numeric.", "Invalid Link", JOptionPane.WARNING_MESSAGE);
+            length = Double.parseDouble(trimToEmpty(lengthField.getText()));
+            freeSpeed = Double.parseDouble(trimToEmpty(freeSpeedField.getText())) / 3.6;
+            lanes = Double.parseDouble(trimToEmpty(lanesField.getText()));
+            capacity = Double.parseDouble(trimToEmpty(capacityField.getText()));
+            validateNumbers(length, freeSpeed, lanes, capacity);
+        } catch (IllegalArgumentException ex) {
+            JOptionPane.showMessageDialog(this, ex.getMessage(), "Invalid Link", JOptionPane.WARNING_MESSAGE);
             return;
         }
 
@@ -915,7 +1153,8 @@ public final class NetworkEditorPanel extends JPanel {
                 attrs
         );
 
-        links.put(linkId, created);
+        links.put(linkId, created); changedLinks.add(linkId);
+        remember(() -> links.remove(linkId), () -> links.put(linkId, created));
         scheduleDerivedRebuild();
         selectedLinkId = linkId;
         selectedNodeId = null;
@@ -948,7 +1187,9 @@ public final class NetworkEditorPanel extends JPanel {
     private NodePoint findNearestNode(Point click, double thresholdPixels) {
         NodePoint best = null;
         double bestDistance = thresholdPixels;
-        for (NodePoint node : nodes.values()) {
+        for (String id : viewportNodes) {
+            NodePoint node = nodes.get(id);
+            if (node == null) continue;
             Point2D.Double p = worldToScreen(node.x(), node.y());
             double d = distance(click.x, click.y, p.x, p.y);
             if (d <= bestDistance) {
@@ -961,10 +1202,13 @@ public final class NetworkEditorPanel extends JPanel {
 
     private LinkSegment findNearestLink(Point click, double thresholdPixels) {
         List<PickCandidate> candidates = new ArrayList<>();
+        double ratio = zoom/cacheZoom;
+        double pickX = (click.x-panX+ratio*cachePanX)/ratio;
+        double pickY = (click.y-getHeight()*(1-ratio)-ratio*cachePanY+panY)/ratio;
 
         if (!renderedPickLinks.isEmpty()) {
             for (PickableLink pickable : renderedPickLinks) {
-                double d = pointToSegmentDistance(click.x, click.y, pickable.ax(), pickable.ay(), pickable.bx(), pickable.by());
+                double d = pointToSegmentDistance(pickX, pickY, pickable.ax(), pickable.ay(), pickable.bx(), pickable.by()) * ratio;
                 if (d <= thresholdPixels) {
                     candidates.add(new PickCandidate(pickable.linkId(), d));
                 }
@@ -1001,6 +1245,7 @@ public final class NetworkEditorPanel extends JPanel {
     }
 
     private void notifySelectionChanged() {
+        drawingCache = null;
         if (selectionListener == null) {
             return;
         }
@@ -1160,16 +1405,16 @@ public final class NetworkEditorPanel extends JPanel {
         return Math.hypot(dx, dy);
     }
 
-    private static double linkStrokeWidth(LinkSegment link) {
+    private double linkStrokeWidth(LinkSegment link) {
         double lanes = Math.max(0.1, link.lanes());
-        return 1.4 + Math.min(4.8, Math.sqrt(lanes) * 1.05);
+        return Math.max(0.65, Math.min(6.2, 3.5 * baseScale * zoom * lanes));
     }
 
     private double bidirectionalOffsetSign(LinkSegment link) {
         if (!hasOppositeLink(link)) {
             return 0.0;
         }
-        return link.fromNodeId().compareTo(link.toNodeId()) <= 0 ? 1.0 : -1.0;
+        return 1.0; // Right side of travel; the reverse link has the reverse normal.
     }
 
     private boolean hasOppositeLink(LinkSegment link) {
@@ -1177,6 +1422,7 @@ public final class NetworkEditorPanel extends JPanel {
     }
 
     private void scheduleDerivedRebuild() {
+        drawingCache = null;
         List<LinkSegment> snapshot = new ArrayList<>(links.values());
         mutationWorker.submit(() -> {
             Set<String> rebuiltDirected = new LinkedHashSet<>(Math.max(16, snapshot.size() * 2));
@@ -1193,6 +1439,9 @@ public final class NetworkEditorPanel extends JPanel {
             }
 
             SwingUtilities.invokeLater(() -> {
+                if (disposed) return;
+                drawingCache = null;
+                repaint();
                 directedConnectionKeys.clear();
                 directedConnectionKeys.addAll(rebuiltDirected);
 
@@ -1217,34 +1466,6 @@ public final class NetworkEditorPanel extends JPanel {
         });
     }
 
-    private void rebuildAvailableModes() {
-        Set<String> previousVisible = new LinkedHashSet<>(visibleLinkModes);
-        availableLinkModes.clear();
-        for (LinkSegment link : links.values()) {
-            for (String mode : link.allowedModes()) {
-                String normalized = normalizeMode(mode);
-                if (!normalized.isEmpty()) {
-                    availableLinkModes.add(normalized);
-                }
-            }
-        }
-
-        visibleLinkModes.clear();
-        if (previousVisible.isEmpty()) {
-            visibleLinkModes.addAll(availableLinkModes);
-            return;
-        }
-
-        for (String mode : previousVisible) {
-            if (availableLinkModes.contains(mode)) {
-                visibleLinkModes.add(mode);
-            }
-        }
-        if (visibleLinkModes.isEmpty()) {
-            visibleLinkModes.addAll(availableLinkModes);
-        }
-    }
-
     private boolean isLinkModeVisible(LinkSegment link) {
         if (availableLinkModes.isEmpty() || visibleLinkModes.isEmpty()) {
             return true;
@@ -1259,13 +1480,6 @@ public final class NetworkEditorPanel extends JPanel {
             }
         }
         return false;
-    }
-
-    private void rebuildDirectionalIndex() {
-        directedConnectionKeys.clear();
-        for (LinkSegment link : links.values()) {
-            directedConnectionKeys.add(directedEdgeKey(link.fromNodeId(), link.toNodeId()));
-        }
     }
 
     private static String directedEdgeKey(String fromNodeId, String toNodeId) {
@@ -1339,119 +1553,6 @@ public final class NetworkEditorPanel extends JPanel {
     private static boolean looksLikeLv95(double minX, double minY, double maxX, double maxY) {
         return minX >= 2_200_000.0 && maxX <= 2_900_000.0
                 && minY >= 1_000_000.0 && maxY <= 1_400_000.0;
-    }
-
-    private Point2D.Double worldToLonLat(double x, double y, CoordinateSystem crs) {
-        return switch (crs) {
-            case EPSG_4326 -> new Point2D.Double(x, y);
-            case EPSG_2056 -> lv95ToWgs84(x, y);
-            case AUTO, NONE -> null;
-        };
-    }
-
-    private Point2D.Double lonLatToWorld(double lon, double lat, CoordinateSystem crs) {
-        return switch (crs) {
-            case EPSG_4326 -> new Point2D.Double(lon, lat);
-            case EPSG_2056 -> wgs84ToLv95(lon, lat);
-            case AUTO, NONE -> null;
-        };
-    }
-
-    private Point2D.Double lv95ToWgs84(double easting, double northing) {
-        if (lv95ToWgs84Transform != null) {
-            Coord transformed = lv95ToWgs84Transform.transform(new Coord(easting, northing));
-            return new Point2D.Double(transformed.getX(), transformed.getY());
-        }
-        return lv95ToWgs84Fallback(easting, northing);
-    }
-
-    private Point2D.Double wgs84ToLv95(double lon, double lat) {
-        if (wgs84ToLv95Transform != null) {
-            Coord transformed = wgs84ToLv95Transform.transform(new Coord(lon, lat));
-            return new Point2D.Double(transformed.getX(), transformed.getY());
-        }
-        return wgs84ToLv95Fallback(lon, lat);
-    }
-
-    private static CoordinateTransformation tryCreateTransformation(String fromCrs, String toCrs) {
-        try {
-            return TransformationFactory.getCoordinateTransformation(fromCrs, toCrs);
-        } catch (Exception ignored) {
-            return null;
-        }
-    }
-
-    private static Point2D.Double lv95ToWgs84Fallback(double easting, double northing) {
-        double y = (easting - 2_600_000.0) / 1_000_000.0;
-        double x = (northing - 1_200_000.0) / 1_000_000.0;
-
-        double latitudeAux = 16.9023892
-                + 3.238272 * x
-                - 0.270978 * y * y
-                - 0.002528 * x * x
-                - 0.0447 * y * y * x
-                - 0.0140 * x * x * x;
-
-        double longitudeAux = 2.6779094
-                + 4.728982 * y
-                + 0.791484 * y * x
-                + 0.1306 * y * x * x
-                - 0.0436 * y * y * y;
-
-        double lat = latitudeAux * 100.0 / 36.0;
-        double lon = longitudeAux * 100.0 / 36.0;
-        return new Point2D.Double(lon, lat);
-    }
-
-    private static Point2D.Double wgs84ToLv95Fallback(double lon, double lat) {
-        double latSec = lat * 3600.0;
-        double lonSec = lon * 3600.0;
-        double latAux = (latSec - 169_028.66) / 10_000.0;
-        double lonAux = (lonSec - 26_782.5) / 10_000.0;
-
-        double e = 2_600_072.37
-                + 211_455.93 * lonAux
-                - 10_938.51 * lonAux * latAux
-                - 0.36 * lonAux * latAux * latAux
-                - 44.54 * lonAux * lonAux * lonAux;
-
-        double n = 1_200_147.07
-                + 308_807.95 * latAux
-                + 3_745.25 * lonAux * lonAux
-                + 76.63 * latAux * latAux
-                - 194.56 * lonAux * lonAux * latAux
-                + 119.79 * latAux * latAux * latAux;
-
-        return new Point2D.Double(e, n);
-    }
-
-    private int estimateTileZoom(double minLon, double maxLon) {
-        double lonSpan = Math.max(0.000001, maxLon - minLon);
-        double raw = Math.log((getWidth() * 360.0) / (OsmTileCache.tileSize() * lonSpan)) / Math.log(2.0);
-        int zoomLevel = (int) Math.round(raw + Math.log(zoom) / Math.log(2.0));
-        return Math.max(3, Math.min(19, zoomLevel));
-    }
-
-    private static double lonToTileX(double lon, int zoomLevel) {
-        return (lon + 180.0) / 360.0 * (1 << zoomLevel);
-    }
-
-    private static double latToTileY(double lat, int zoomLevel) {
-        double latRad = Math.toRadians(lat);
-        double n = Math.log(Math.tan(Math.PI / 4.0 + latRad / 2.0));
-        return (1.0 - n / Math.PI) / 2.0 * (1 << zoomLevel);
-    }
-
-    private static double tileXToLon(double tileX, int zoomLevel) {
-        return tileX / (1 << zoomLevel) * 360.0 - 180.0;
-    }
-
-    private static double tileYToLat(double tileY, int zoomLevel) {
-        double n = Math.PI - 2.0 * Math.PI * tileY / (1 << zoomLevel);
-        return Math.toDegrees(Math.atan(Math.sinh(n)));
-    }
-
-    private record BufferedTile(int tileX, int tileY, java.awt.image.BufferedImage image) {
     }
 
     private record ViewportBounds(double minX, double minY, double maxX, double maxY) {

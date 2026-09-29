@@ -1,0 +1,193 @@
+.app-root {
+    -fx-background-color: linear-gradient(to bottom, #e8ecf2 0%, #dfe4ed 48%, #d6dce8 100%);
+    -fx-font-family: "Segoe UI Variable", "Aptos", "Poppins", "Helvetica Neue", sans-serif;
+}
+
+.top-wrap {
+    -fx-background-color: transparent;
+}
+
+.toolbar {
+    -fx-background-color: rgba(235, 240, 248, 0.92);
+    -fx-border-color: rgba(160, 175, 200, 0.60);
+    -fx-border-width: 0 0 1 0;
+    -fx-effect: dropshadow(three-pass-box, rgba(0, 0, 0, 0.12), 12, 0.1, 0, 2);
+}
+
+.label {
+    -fx-text-fill: #2c3340;
+}
+
+.field-caption {
+    -fx-font-size: 12px;
+    -fx-text-fill: #566580;
+    -fx-font-weight: 600;
+}
+
+.mono-value {
+    -fx-font-family: "Cascadia Mono", "Consolas", monospace;
+    -fx-font-weight: 600;
+    -fx-text-fill: #1e2530;
+}
+
+.button {
+    -fx-background-radius: 10;
+    -fx-border-radius: 10;
+    -fx-padding: 6 12 6 12;
+    -fx-background-color: #ffffff;
+    -fx-text-fill: #2c3340;
+    -fx-border-color: #b8c2d0;
+}
+
+.button:hover {
+    -fx-background-color: #f0f3f8;
+}
+
+.accent-button {
+    -fx-background-color: linear-gradient(to right, #1473e6, #1490e6);
+    -fx-border-color: #2fa6ff;
+    -fx-text-fill: #ffffff;
+    -fx-font-weight: 700;
+}
+
+.accent-button:hover {
+    -fx-background-color: linear-gradient(to right, #1a7df8, #1aa0fb);
+}
+
+.ghost-button {
+    -fx-background-color: #f3f5f9;
+    -fx-border-color: #c0cad8;
+    -fx-padding: 4 10 4 10;
+}
+
+.check-box {
+    -fx-text-fill: #2c3340;
+}
+
+.check-box .box {
+    -fx-background-color: #ffffff;
+    -fx-border-color: #a0adc0;
+    -fx-border-radius: 4;
+    -fx-background-radius: 4;
+}
+
+.combo-box,
+.slider,
+.text-field,
+.color-picker {
+    -fx-accent: #1473e6;
+}
+
+.combo-box,
+.text-field {
+    -fx-background-color: #ffffff;
+    -fx-text-fill: #2c3340;
+    -fx-border-color: #b8c2d0;
+    -fx-border-radius: 8;
+    -fx-background-radius: 8;
+}
+
+.combo-box .list-cell,
+.combo-box-popup .list-cell {
+    -fx-background-color: #ffffff;
+    -fx-text-fill: #2c3340;
+}
+
+.combo-box-popup .list-view {
+    -fx-background-color: #ffffff;
+    -fx-border-color: #b8c2d0;
+}
+
+.side-scroll {
+    -fx-background: transparent;
+    -fx-background-color: transparent;
+    -fx-border-color: rgba(160, 175, 200, 0.50);
+    -fx-border-width: 0 0 0 1;
+}
+
+.side-scroll > .viewport {
+    -fx-background-color: transparent;
+}
+
+.side-content {
+    -fx-background-color: transparent;
+}
+
+.card {
+    -fx-background-color: rgba(255, 255, 255, 0.85);
+    -fx-border-color: rgba(160, 175, 200, 0.60);
+    -fx-background-radius: 12;
+    -fx-border-radius: 12;
+    -fx-padding: 12;
+}
+
+.card-title {
+    -fx-font-size: 13px;
+    -fx-text-fill: #1473e6;
+    -fx-font-weight: 700;
+}
+
+.rows {
+    -fx-padding: 2 0 0 0;
+}
+
+.hint {
+    -fx-text-fill: #6b7a90;
+    -fx-font-size: 12px;
+}
+
+.bottom-bar {
+    -fx-background-color: rgba(240, 243, 248, 0.92);
+    -fx-border-color: rgba(160, 175, 200, 0.50);
+    -fx-border-width: 1 0 0 0;
+}
+
+.danger-button {
+    -fx-background-color: linear-gradient(to right, #d62828, #ef4444);
+    -fx-border-color: #ff8a8a;
+    -fx-text-fill: #ffffff;
+    -fx-font-weight: 700;
+}
+
+.danger-button:hover {
+    -fx-background-color: linear-gradient(to right, #ef4444, #ff6b6b);
+}
+
+.recording-button {
+    -fx-background-color: linear-gradient(to right, #d62828, #ef4444);
+    -fx-border-color: #ff8a8a;
+    -fx-font-weight: 700;
+}
+
+.recording-button:hover {
+    -fx-background-color: linear-gradient(to right, #ef4444, #ff6b6b);
+}
+
+.titled-pane {
+    -fx-text-fill: #1473e6;
+}
+
+.titled-pane > .title {
+    -fx-background-color: rgba(255, 255, 255, 0.85);
+    -fx-border-color: rgba(160, 175, 200, 0.60);
+    -fx-background-radius: 12 12 0 0;
+    -fx-border-radius: 12 12 0 0;
+    -fx-padding: 8 12 8 12;
+}
+
+.titled-pane:collapsed > .title {
+    -fx-background-radius: 12;
+    -fx-border-radius: 12;
+}
+
+.titled-pane > .title > .arrow-button .arrow {
+    -fx-background-color: #1473e6;
+}
+
+.titled-pane > *.content {
+    -fx-background-color: rgba(255, 255, 255, 0.85);
+    -fx-border-color: rgba(160, 175, 200, 0.60);
+    -fx-border-width: 0 1 1 1;
+    -fx-background-radius: 0 0 12 12;
+    -fx-border-radius: 0 0 12 12;
+}

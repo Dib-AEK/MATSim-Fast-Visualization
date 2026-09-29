@@ -26,7 +26,8 @@ public final class SimulationFingerprint {
             MatsimNetworkConverter.class,
             MatsimEventsProcessor.class,
             MatsimEventsCollector.class,
-            TransitScheduleParser.class
+            TransitScheduleParser.class,
+            com.matsim.viz.parser.PlansXmlPurposeTimelineParser.class
     );
 
     private SimulationFingerprint() {

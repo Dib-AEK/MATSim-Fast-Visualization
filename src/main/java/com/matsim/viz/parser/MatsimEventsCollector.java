@@ -106,7 +106,7 @@ public final class MatsimEventsCollector implements
         vehicleToPerson.putIfAbsent(vehicleId, personId);
 
         String mode = firstNonBlank(
-                normalizeMode(event.getAttributes().get("networkMode")),
+                normalizeMode(event.getNetworkMode()),
                 normalizeMode(event.getAttributes().get("legMode")),
                 personToLatestMode.get(personId)
         );
@@ -160,7 +160,7 @@ public final class MatsimEventsCollector implements
             vehicleToPerson.putIfAbsent(departureVehicle, personId);
         }
 
-        String mode = normalizeMode(event.getAttributes().get("legMode"));
+        String mode = normalizeMode(event.getLegMode());
         if (mode != null) {
             personToLatestMode.put(personId, mode);
         }

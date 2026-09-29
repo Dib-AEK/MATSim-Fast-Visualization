@@ -1,6 +1,7 @@
 package com.matsim.viz.ui;
 
 import com.matsim.viz.domain.ColorMode;
+import com.matsim.viz.ui.map.OsmBackground;
 import com.matsim.viz.domain.LinkSegment;
 import com.matsim.viz.domain.NetworkData;
 import com.matsim.viz.domain.PtStopPoint;
@@ -10,6 +11,7 @@ import com.matsim.viz.engine.SimulationModel;
 
 import javax.swing.JPanel;
 import java.awt.BasicStroke;
+import java.awt.AlphaComposite;
 import java.awt.Color;
 import java.awt.Dimension;
 import java.awt.Font;
@@ -26,6 +28,8 @@ import java.awt.event.MouseEvent;
 import java.awt.event.MouseWheelEvent;
 import java.awt.geom.AffineTransform;
 import java.awt.geom.Point2D;
+import java.awt.geom.Line2D;
+import java.awt.geom.RoundRectangle2D;
 import java.awt.geom.Rectangle2D;
 import java.awt.image.BufferedImage;
 import java.util.ArrayList;
@@ -62,8 +66,6 @@ public final class NetworkPanel extends JPanel {
     private static final int PARALLEL_MIN_VISIBLE_LINKS = 200;
     private static final int PARALLEL_MIN_ACTIVE_TRAVERSALS = 8_000;
     private static final int MAX_SORTED_TRAVERSALS_PER_GROUP = 512;
-    private static final long PAN_CACHE_REFRESH_NANOS = 120_000_000L;
-    private static final double PAN_CACHE_MAX_DRIFT_RATIO = 0.35;
     private static final int VIEWPORT_WORLD_PADDING_PX = 48;
 
     private static final double DEFAULT_CAR_LIKE_LENGTH_METERS = 7.0;
@@ -78,8 +80,8 @@ public final class NetworkPanel extends JPanel {
     private static final double DEFAULT_RAIL_WIDTH_RATIO = 0.90;
     private static final double MIN_VEHICLE_LENGTH_METERS = 0.8;
 
-    private static final Color DEFAULT_BACKGROUND = new Color(0x060606);
-    private static final Color DEFAULT_ROAD = new Color(0x333333);
+    private static final Color DEFAULT_BACKGROUND = new Color(0x111820);
+    private static final Color DEFAULT_ROAD = new Color(0x394550);
     private static final Color LIGHT_BACKGROUND = new Color(0xECEFF4);
     private static final Color LIGHT_ROAD = new Color(0xB0B8C8);
     private static final Color QUEUE_LABEL = new Color(0xFF3D3D);
@@ -94,6 +96,10 @@ public final class NetworkPanel extends JPanel {
     private final PlaybackController playbackController;
     private final VehicleColorProvider colorProvider = new VehicleColorProvider();
     private final SpatialGrid spatialGrid;
+    private final Map<String, CarriagewayLayout.Slot> carriageways;
+    private final List<RoadTaper.Join> roadJoins;
+    private final Map<LinkScreenGeometry, RoadTaper> roadTapers = new HashMap<>();
+    private final double maxCarriagewayExtent;
     private final Set<String> selectedLinkModes = new HashSet<>();
     private final Set<String> selectedTripModes = new HashSet<>();
     private final Set<String> selectedHeatmapTripModes = new HashSet<>();
@@ -105,11 +111,15 @@ public final class NetworkPanel extends JPanel {
     private boolean darkTheme = true;
     private Color mapBackground = DEFAULT_BACKGROUND;
     private Color mapRoad = DEFAULT_ROAD;
+    private OsmBackground osmBackground;
     private boolean showQueues = false;
     private boolean suppressOverlays = false;
     private boolean showBottleneck;
     private double bottleneckDivisor = 6.0;
     private double bidirectionalOffset = 0.45;
+    private double detailStartLanePixels = 0.3;
+    private double detailFullLanePixels = 1.5;
+    private double overviewVehicleCoverage = 0.75;
     private double sampleSize = 1.0;
     private double carLikeVehicleLengthMeters = DEFAULT_CAR_LIKE_LENGTH_METERS;
     private double bikeVehicleLengthMeters = DEFAULT_BIKE_LENGTH_METERS;
@@ -157,12 +167,18 @@ public final class NetworkPanel extends JPanel {
     private boolean fitInitialized;
 
     private BufferedImage cachedNetworkLayer;
+    private double networkRasterScale = 1.0;
+    private double cachedRasterScale = -1.0;
     private double cachedZoom = -1.0;
     private double cachedPanX = Double.NaN;
     private double cachedPanY = Double.NaN;
     private int cachedWidth = -1;
     private int cachedHeight = -1;
-    private long lastNetworkRenderNanos;
+    private BufferedImage cachedRoadLayer;
+    private int cacheMargin;
+    private float roadOpacity = 1f;
+    private boolean mapTilesDirty;
+    private boolean recordingFrame;
 
     private Point dragStart;
 
@@ -170,6 +186,12 @@ public final class NetworkPanel extends JPanel {
         this.model = model;
         this.playbackController = playbackController;
         this.spatialGrid = SpatialGrid.build(model.networkData());
+        this.carriageways = CarriagewayLayout.build(model.networkData().getLinks().values());
+        this.roadJoins = RoadTaper.joins(model.networkData().getLinks().values());
+        this.maxCarriagewayExtent = model.networkData().getLinks().values().stream().mapToDouble(link -> {
+            CarriagewayLayout.Slot slot = carriageways.get(link.id());
+            return Math.abs(slot.centerLanes()) + slot.gapSteps() * 0.5 + CarriagewayLayout.lanes(link) / 2.0;
+        }).max().orElse(1);
         setBackground(mapBackground);
         setPreferredSize(new Dimension(1200, 800));
         selectedLinkModes.addAll(defaultTransportModes(model.availableLinkModes()));
@@ -194,6 +216,12 @@ public final class NetworkPanel extends JPanel {
                     dragStart = current;
                     repaint();
                 }
+            }
+
+            @Override
+            public void mouseReleased(MouseEvent e) {
+                dragStart = null;
+                repaint();
             }
 
             @Override
@@ -638,6 +666,24 @@ public final class NetworkPanel extends JPanel {
         repaint();
     }
 
+    public boolean isMapBackgroundEnabled() { return osmBackground != null; }
+
+    public void setOsmBackground(OsmBackground background) {
+        if (background != null) {
+            NetworkData network = model.networkData();
+            background.validateLocation((network.getMinX() + network.getMaxX()) / 2,
+                    (network.getMinY() + network.getMaxY()) / 2);
+        }
+        if (osmBackground != null) osmBackground.close();
+        osmBackground = background;
+        invalidateNetworkCache();
+        repaint();
+    }
+
+    public void disposeMapResources() {
+        if (osmBackground != null) osmBackground.close();
+    }
+
     public Color getMapBackground() {
         return mapBackground;
     }
@@ -647,6 +693,14 @@ public final class NetworkPanel extends JPanel {
         setBackground(mapBackground);
         invalidateNetworkCache();
         repaint();
+    }
+
+    public double getRoadOpacity() { return roadOpacity; }
+
+    public void setRoadOpacity(double opacity) {
+        if (!Double.isFinite(opacity)) throw new IllegalArgumentException("Road opacity must be finite");
+        roadOpacity = (float) Math.max(0, Math.min(1, opacity));
+        repaint(); // Composite the existing road layer; no geometry or map rebuild needed.
     }
 
     public Color getMapRoad() {
@@ -798,6 +852,7 @@ public final class NetworkPanel extends JPanel {
 
     public void setKeepVehiclesVisibleWhenZoomedOut(boolean enabled) {
         this.keepVehiclesVisibleWhenZoomedOut = enabled;
+        invalidateNetworkCache();
         repaint();
     }
 
@@ -816,16 +871,22 @@ public final class NetworkPanel extends JPanel {
 
     public void setMinVehicleWidthPixels(double value) {
         this.minVehicleWidthPixels = clampVehiclePixelSize(value);
+        invalidateNetworkCache();
         repaint();
     }
 
     public void setRenderingSuspended(boolean renderingSuspended) {
         this.renderingSuspended = renderingSuspended;
-        if (!renderingSuspended) {
-            invalidateNetworkCache();
+        invalidateNetworkCache();
+        if (renderingSuspended) {
+            linkScreenGeometries.clear();
+            roadTapers.clear();
+            visibleLinkIds.clear();
         }
         repaint();
     }
+
+    public SpatialGrid sharedSpatialIndex() { return spatialGrid; }
 
     public boolean isRenderingSuspended() {
         return renderingSuspended;
@@ -845,7 +906,7 @@ public final class NetworkPanel extends JPanel {
         ensureFitted();
 
         Graphics2D g2 = (Graphics2D) g.create();
-        g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_OFF);
+        g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
         g2.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_SPEED);
 
         renderScene(g2, !suppressOverlays, showQueues && !suppressOverlays);
@@ -853,17 +914,33 @@ public final class NetworkPanel extends JPanel {
     }
 
     public void paintRecordingFrame(Graphics2D g2) {
-        if (getWidth() <= 0 || getHeight() <= 0) {
-            return;
-        }
+        paintRecordingFrame(g2, getWidth(), getHeight());
+    }
 
+    /** Render vectors at output resolution, preserving the current camera and aspect ratio. */
+    public void paintRecordingFrame(Graphics2D g2, int outputWidth, int outputHeight) {
+        if (getWidth() <= 0 || getHeight() <= 0 || outputWidth <= 0 || outputHeight <= 0) return;
         ensureFitted();
-
         Graphics2D captureGraphics = (Graphics2D) g2.create();
-        captureGraphics.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_OFF);
-        captureGraphics.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_SPEED);
-        renderScene(captureGraphics, false, false);
-        captureGraphics.dispose();
+        double previousScale = networkRasterScale;
+        try {
+            captureGraphics.setColor(mapBackground);
+            captureGraphics.fillRect(0, 0, outputWidth, outputHeight);
+            double scale = Math.min((double) outputWidth / getWidth(), (double) outputHeight / getHeight());
+            captureGraphics.translate((outputWidth - getWidth() * scale) / 2,
+                    (outputHeight - getHeight() * scale) / 2);
+            captureGraphics.scale(scale, scale);
+            captureGraphics.clipRect(0, 0, getWidth(), getHeight());
+            captureGraphics.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+            captureGraphics.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
+            recordingFrame = true;
+            networkRasterScale = scale;
+            renderScene(captureGraphics, false, false);
+        } finally {
+            recordingFrame = false;
+            networkRasterScale = previousScale;
+            captureGraphics.dispose();
+        }
     }
 
     private void renderScene(Graphics2D g2, boolean drawOverlays, boolean drawQueueText) {
@@ -881,11 +958,18 @@ public final class NetworkPanel extends JPanel {
 
             Graphics2D worldGraphics = (Graphics2D) g2.create();
             worldGraphics.translate(panShiftX, panShiftY);
-            worldGraphics.drawImage(cachedNetworkLayer, 0, 0, null);
+            worldGraphics.drawImage(cachedNetworkLayer, -cacheMargin, -cacheMargin,
+                    cachedWidth + 2 * cacheMargin, cachedHeight + 2 * cacheMargin, null);
+            worldGraphics.setComposite(AlphaComposite.SrcOver.derive(roadOpacity));
+            worldGraphics.drawImage(cachedRoadLayer, -cacheMargin, -cacheMargin,
+                    cachedWidth + 2 * cacheMargin, cachedHeight + 2 * cacheMargin, null);
+            worldGraphics.setComposite(AlphaComposite.SrcOver);
             if (vehicleMode) {
                 drawVehicles(worldGraphics);
             } else {
+                worldGraphics.setComposite(AlphaComposite.SrcOver.derive(roadOpacity));
                 drawHeatmap(worldGraphics);
+                worldGraphics.setComposite(AlphaComposite.SrcOver);
             }
             if (vehicleMode && drawQueueText) {
                 drawQueueLabels(worldGraphics);
@@ -902,6 +986,8 @@ public final class NetworkPanel extends JPanel {
             }
         }
 
+        // Map credit is part of the map, including in recordings with overlays hidden.
+        if (osmBackground != null) osmBackground.drawAttribution(g2, getWidth(), getHeight());
         if (drawOverlays) {
             drawClockOverlay(g2);
             drawLegendOverlay(g2);
@@ -995,54 +1081,66 @@ public final class NetworkPanel extends JPanel {
     }
 
     private void renderNetworkLayerIfNeeded() {
-        long now = System.nanoTime();
+        int desiredMargin = recordingFrame ? 0 : Math.min(384, Math.max(128, Math.min(getWidth(), getHeight()) / 2));
         if (cachedNetworkLayer != null
+                && cacheMargin == desiredMargin
+                && cachedRasterScale == networkRasterScale
                 && cachedZoom == zoom
                 && cachedWidth == getWidth()
                 && cachedHeight == getHeight()) {
             double panDriftX = Math.abs(panX - cachedPanX);
             double panDriftY = Math.abs(panY - cachedPanY);
-            double maxPanDrift = Math.max(cachedWidth, cachedHeight) * PAN_CACHE_MAX_DRIFT_RATIO;
-            boolean driftTooLarge = panDriftX > maxPanDrift || panDriftY > maxPanDrift;
-            boolean refreshForPanning = (panDriftX > 0.5 || panDriftY > 0.5)
-                    && (now - lastNetworkRenderNanos) >= PAN_CACHE_REFRESH_NANOS;
-            if (!driftTooLarge && !refreshForPanning) {
-                return;
-            }
+            if (panDriftX <= cacheMargin && panDriftY <= cacheMargin
+                    && (!mapTilesDirty || (dragStart != null && !recordingFrame))) return;
         }
+        cacheMargin = desiredMargin;
+        mapTilesDirty = false;
 
         cachedWidth = getWidth();
         cachedHeight = getHeight();
         cachedZoom = zoom;
         cachedPanX = panX;
         cachedPanY = panY;
-        lastNetworkRenderNanos = now;
 
-        cachedNetworkLayer = createCompatibleImage(cachedWidth, cachedHeight);
+        cachedRasterScale = networkRasterScale;
+        int layerWidth = cachedWidth + 2 * cacheMargin;
+        int layerHeight = cachedHeight + 2 * cacheMargin;
+        int rasterWidth = Math.max(1, (int) Math.ceil(layerWidth * networkRasterScale));
+        int rasterHeight = Math.max(1, (int) Math.ceil(layerHeight * networkRasterScale));
+        cachedNetworkLayer = createCompatibleImage(rasterWidth, rasterHeight);
         Graphics2D g2 = cachedNetworkLayer.createGraphics();
+        g2.scale(networkRasterScale, networkRasterScale);
         g2.setColor(mapBackground);
-        g2.fillRect(0, 0, cachedWidth, cachedHeight);
-        g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_OFF);
+        g2.fillRect(0, 0, layerWidth, layerHeight);
+        g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+        g2.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_SPEED);
+
+        if (osmBackground != null) {
+            osmBackground.draw(g2, layerWidth, layerHeight,
+                    (x, y) -> screenToWorld(x - cacheMargin, y - cacheMargin),
+                    (x, y) -> {
+                        Point2D.Double point = worldToScreen(x, y);
+                        return new Point2D.Double(point.x + cacheMargin, point.y + cacheMargin);
+                    }, () -> {
+                        mapTilesDirty = true;
+                        repaint();
+                    });
+        }
+        g2.dispose();
+        cachedRoadLayer = new BufferedImage(rasterWidth, rasterHeight, BufferedImage.TYPE_INT_ARGB_PRE);
+        g2 = cachedRoadLayer.createGraphics();
+        g2.scale(networkRasterScale, networkRasterScale);
+        g2.translate(cacheMargin, cacheMargin);
+        g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
         g2.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_SPEED);
 
         linkScreenGeometries.clear();
+        roadTapers.clear();
         visibleLinkIds.clear();
         queryVisibleLinks(visibleLinkIds);
 
         double laneWidth = laneWidthPixels();
-        Map<String, double[]> nodeMaxRadius = new HashMap<>();
         double minScreenLength = zoom < 0.3 ? 1.5 : 0.5;
-
-        Set<String> renderedNodePairs = new HashSet<>();
-        for (String linkId : visibleLinkIds) {
-            LinkSegment link = model.networkData().getLinks().get(linkId);
-            if (link == null) {
-                continue;
-            }
-            if (shouldRenderLink(link)) {
-                renderedNodePairs.add(link.fromNodeId() + ">" + link.toNodeId());
-            }
-        }
 
         g2.setColor(mapRoad);
         for (String linkId : visibleLinkIds) {
@@ -1067,44 +1165,126 @@ public final class NetworkPanel extends JPanel {
             double nx = -dy / length;
             double ny = dx / length;
             double angle = Math.atan2(dy, dx);
-            float roadWidth = (float) Math.max(0.35, Math.min(32.0, laneWidth * laneCount));
 
-            boolean hasReverse = renderedNodePairs.contains(link.toNodeId() + ">" + link.fromNodeId());
-            double offsetX = 0;
-            double offsetY = 0;
-            if (hasReverse) {
-                double shift = laneWidth * laneCount * bidirectionalOffset;
-                offsetX = nx * shift;
-                offsetY = ny * shift;
-                a.x += offsetX;
-                a.y += offsetY;
-                b.x += offsetX;
-                b.y += offsetY;
-            }
-
-            g2.setStroke(new BasicStroke(roadWidth, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
-            g2.drawLine((int) Math.round(a.x), (int) Math.round(a.y), (int) Math.round(b.x), (int) Math.round(b.y));
-
-            double halfWidth = roadWidth / 2.0;
-            nodeMaxRadius.merge(link.fromNodeId(), new double[]{a.x, a.y, halfWidth},
-                    (old, nw) -> { old[2] = Math.max(old[2], nw[2]); return old; });
-            nodeMaxRadius.merge(link.toNodeId(), new double[]{b.x, b.y, halfWidth},
-                    (old, nw) -> { old[2] = Math.max(old[2], nw[2]); return old; });
-
+            // Screen y points down: (-dy, dx) is the right side of travel.
+            double shift = networkDetail() * carriageways.get(link.id()).offset(laneWidth, laneWidth * bidirectionalOffset * 0.5);
+            a.x += nx * shift;
+            a.y += ny * shift;
             linkScreenGeometries.put(link.id(), new LinkScreenGeometry(a.x, a.y, dx, dy, length, nx, ny, laneWidth, laneCount, angle));
         }
 
-        for (double[] nodeInfo : nodeMaxRadius.values()) {
-            double r = nodeInfo[2];
-            if (r > 0.3) {
-                int cx = (int) Math.round(nodeInfo[0] - r);
-                int cy = (int) Math.round(nodeInfo[1] - r);
-                int d = (int) Math.round(r * 2);
-                g2.fillOval(cx, cy, d, d);
+        double detail = networkDetail();
+        if (detail > 0) buildRoadTapers();
+        if (detail > 0) {
+            // Separate passes keep junction surfaces above all road outlines.
+            for (LinkScreenGeometry geometry : linkScreenGeometries.values()) {
+                drawRoadSurface(g2, geometry, true);
+            }
+        }
+        Set<OverviewEdge> drawnCenterlines = new HashSet<>();
+        for (var entry : linkScreenGeometries.entrySet()) {
+            if (detail == 0 && !drawnCenterlines.add(OverviewEdge.of(model.networkData().getLinks().get(entry.getKey())))) continue;
+            drawRoadSurface(g2, entry.getValue(), false);
+        }
+        if (detail == 1 && laneWidth >= 4.0 && visualizationMode == VisualizationMode.VEHICLES) {
+            for (LinkScreenGeometry geometry : linkScreenGeometries.values()) {
+                drawRoadMarkings(g2, geometry);
             }
         }
 
         g2.dispose();
+    }
+
+    private void buildRoadTapers() {
+        for (RoadTaper.Join join : roadJoins) {
+            LinkScreenGeometry a = linkScreenGeometries.get(join.incoming());
+            LinkScreenGeometry b = linkScreenGeometries.get(join.outgoing());
+            if (a == null || b == null) continue;
+            LinkSegment link = model.networkData().getLinks().get(join.incoming());
+            Point2D.Double node = worldToScreen(link.toX(), link.toY());
+            double dot = a.nx() * b.nx() + a.ny() * b.ny();
+            double mx = (a.nx() + b.nx()) / (1 + dot);
+            double my = (a.ny() + b.ny()) / (1 + dot);
+            boolean useA = a.laneCount() < b.laneCount();
+            LinkScreenGeometry narrow = useA ? a : b;
+            double shift = networkDetail() * carriageways.get(useA ? join.incoming() : join.outgoing())
+                    .offset(narrow.laneWidth(), narrow.laneWidth() * bidirectionalOffset * 0.5);
+            double width = roadWidthPixels(narrow);
+            RoadTaper.Section shared = new RoadTaper.Section(node.x + mx * shift, node.y + my * shift,
+                    mx * width, my * width);
+            double reach = a.laneWidth() * Math.max(6, 8 * Math.abs(a.laneCount() - b.laneCount()));
+            roadTapers.computeIfAbsent(a, road -> createTaper(road, reach)).end(shared);
+            roadTapers.computeIfAbsent(b, road -> createTaper(road, reach)).start(shared);
+        }
+    }
+
+    private RoadTaper createTaper(LinkScreenGeometry road, double reach) {
+        return new RoadTaper(road.fromX(), road.fromY(), road.dx(), road.dy(), road.nx(), road.ny(),
+                roadWidthPixels(road), reach);
+    }
+
+    private void drawRoadSurface(Graphics2D g2, LinkScreenGeometry road, boolean outline) {
+        double width = roadWidthPixels(road);
+        g2.setColor(outline ? interpolateColor(mapRoad, darkTheme ? new Color(0x65717B) : new Color(0x8995A2), networkDetail()) : mapRoad);
+        RoadTaper taper = roadTapers.get(road);
+        if (taper != null) {
+            var surface = taper.surface();
+            g2.fill(surface);
+            if (outline) {
+                g2.setStroke(new BasicStroke((float) (0.8 * networkDetail()), BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+                g2.draw(surface);
+            }
+            return;
+        }
+        g2.setStroke(new BasicStroke((float) (width + (outline ? 0.8 * networkDetail() : 0)),
+                BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+        g2.draw(new Line2D.Double(road.fromX(), road.fromY(), road.fromX() + road.dx(), road.fromY() + road.dy()));
+    }
+
+    private void drawRoadMarkings(Graphics2D g2, LinkScreenGeometry road) {
+        double trim = Math.min(road.length() * 0.22, road.laneWidth() * road.laneCount());
+        if (road.length() < trim * 2 + 12) return;
+        double ux = road.dx() / road.length(), uy = road.dy() / road.length();
+        g2.setColor(darkTheme ? new Color(210, 221, 229, 130) : new Color(255, 255, 255, 200));
+        g2.setStroke(new BasicStroke(0.7f, BasicStroke.CAP_BUTT, BasicStroke.JOIN_ROUND,
+                10, new float[]{6, 9}, 0));
+        for (int lane = 1; lane < road.laneCount(); lane++) {
+            double offset = (lane - road.laneCount() / 2.0) * road.laneWidth();
+            double x = road.fromX() + road.nx() * offset;
+            double y = road.fromY() + road.ny() * offset;
+            RoadTaper taper = roadTapers.get(road);
+            if (taper == null) {
+                g2.draw(new Line2D.Double(x + ux * trim, y + uy * trim,
+                        x + road.dx() - ux * trim, y + road.dy() - uy * trim));
+            } else {
+                var path = new java.awt.geom.Path2D.Double();
+                for (int i = 0; i <= 40; i++) {
+                    double t = (trim + (road.length() - 2 * trim) * i / 40.0) / road.length();
+                    var point = taper.section(t).point(lane / (double) road.laneCount() - 0.5);
+                    if (i == 0) path.moveTo(point.x, point.y); else path.lineTo(point.x, point.y);
+                }
+                g2.draw(path);
+            }
+        }
+        if (road.length() < 65) return;
+        g2.setStroke(new BasicStroke(1f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+        double size = Math.min(5, road.laneWidth() * 0.6);
+        for (int lane = 0; lane < road.laneCount(); lane++) {
+            double offset = (lane + 0.5 - road.laneCount() / 2.0) * road.laneWidth();
+            double x = road.fromX() + road.dx() * 0.62 + road.nx() * offset;
+            double y = road.fromY() + road.dy() * 0.62 + road.ny() * offset;
+            RoadTaper taper = roadTapers.get(road);
+            if (taper != null) {
+                var point = taper.section(0.62).point((lane + 0.5) / road.laneCount() - 0.5);
+                x = point.x;
+                y = point.y;
+            }
+            g2.draw(new Line2D.Double(x - ux * size, y - uy * size, x + ux * size, y + uy * size));
+            for (int side : new int[]{-1, 1}) {
+                g2.draw(new Line2D.Double(x + road.nx() * size * 0.55 * side,
+                        y + road.ny() * size * 0.55 * side, x + ux * size, y + uy * size));
+            }
+        }
     }
 
     private void drawVehicles(Graphics2D g2) {
@@ -1114,6 +1294,12 @@ public final class NetworkPanel extends JPanel {
         if (linkState.isEmpty()) {
             return;
         }
+
+        double detail = networkDetail();
+        if (detail < 1) drawOverviewVehicles(g2, linkState, 1 - detail);
+        if (detail == 0) return;
+        g2 = (Graphics2D) g2.create();
+        g2.setComposite(AlphaComposite.SrcOver.derive((float) detail));
 
         int totalTraversals = 0;
         for (PlaybackController.LinkFrameSnapshot state : linkState.values()) {
@@ -1144,7 +1330,6 @@ public final class NetworkPanel extends JPanel {
                     carLikeVehicleLengthMeters,
                     carLikeVehicleWidthRatio,
                     carShape,
-                    0.12,
                     true,
                     prepared.linkIsBottleneck()
             );
@@ -1158,7 +1343,6 @@ public final class NetworkPanel extends JPanel {
                     truckVehicleLengthMeters,
                     truckVehicleWidthRatio,
                     truckShape,
-                    0.30,
                     true,
                     prepared.linkIsBottleneck()
             );
@@ -1172,7 +1356,6 @@ public final class NetworkPanel extends JPanel {
                     busVehicleLengthMeters,
                     busVehicleWidthRatio,
                     busShape,
-                    0.15,
                     true,
                     prepared.linkIsBottleneck()
             );
@@ -1186,7 +1369,6 @@ public final class NetworkPanel extends JPanel {
                     railVehicleLengthMeters,
                     railVehicleWidthRatio,
                     railShape,
-                    0.0,
                     true,
                     prepared.linkIsBottleneck()
             );
@@ -1200,11 +1382,58 @@ public final class NetworkPanel extends JPanel {
                     bikeVehicleLengthMeters,
                     bikeVehicleWidthRatio,
                     bikeShape,
-                    -0.20,
                     false,
                     prepared.linkIsBottleneck()
             );
         }
+        g2.dispose();
+    }
+
+    private void drawOverviewVehicles(Graphics2D graphics,
+            Map<String, PlaybackController.LinkFrameSnapshot> states, double opacity) {
+        Map<OverviewEdge, List<OverviewVehicle>> groups = new HashMap<>();
+        double time = playbackController.getCurrentTime();
+        for (var entry : states.entrySet()) {
+            LinkSegment link = model.networkData().getLinks().get(entry.getKey());
+            OverviewEdge edge = OverviewEdge.of(link);
+            boolean forward = link.fromX() == edge.x1() && link.fromY() == edge.y1();
+            boolean congested = entry.getValue().queueCount()
+                    > sampleSize * laneCount(link) * link.length() / bottleneckDivisor;
+            for (int index : entry.getValue().traversalIndexes()) {
+                if (!shouldRenderTripMode(model.traversalTripMode(index))) continue;
+                double progress = naturalProgress(index, time);
+                groups.computeIfAbsent(edge, ignored -> new ArrayList<>()).add(
+                        new OverviewVehicle(index, forward ? progress : 1 - progress, congested));
+            }
+        }
+        Graphics2D g = (Graphics2D) graphics.create();
+        g.setComposite(AlphaComposite.SrcOver.derive((float) opacity));
+        g.setStroke(new BasicStroke(1.5f, BasicStroke.CAP_BUTT, BasicStroke.JOIN_ROUND));
+        for (var entry : groups.entrySet()) {
+            OverviewEdge edge = entry.getKey();
+            Point2D.Double a = worldToScreen(edge.x1(), edge.y1());
+            Point2D.Double b = worldToScreen(edge.x2(), edge.y2());
+            // Vehicles share the cached network camera while panning.
+            a.x -= panX - cachedPanX; a.y -= cachedPanY - panY;
+            b.x -= panX - cachedPanX; b.y -= cachedPanY - panY;
+            double length = a.distance(b);
+            if (length <= 0) continue;
+            List<OverviewVehicle> vehicles = entry.getValue();
+            vehicles.sort(java.util.Comparator.comparingDouble(OverviewVehicle::progress));
+            double[] progress = vehicles.stream().mapToDouble(OverviewVehicle::progress).toArray();
+            for (OverviewVehicleLayout.Mark mark : OverviewVehicleLayout.arrange(progress, length, overviewVehicleCoverage)) {
+                OverviewVehicle vehicle = vehicles.get(mark.vehicleIndex());
+                Color color = showBottleneck ? (vehicle.congested() ? BOTTLENECK_CONGESTED : BOTTLENECK_NORMAL)
+                        : colorMode == ColorMode.DEFAULT ? colorProvider.colorForTripMode(model.traversalTripMode(vehicle.index()))
+                        : colorProvider.colorFor(vehicle.index(), model, colorMode);
+                g.setColor(color);
+                g.draw(new Line2D.Double(a.x + (b.x - a.x) * mark.start() / length,
+                        a.y + (b.y - a.y) * mark.start() / length,
+                        a.x + (b.x - a.x) * mark.end() / length,
+                        a.y + (b.y - a.y) * mark.end() / length));
+            }
+        }
+        g.dispose();
     }
 
     private void drawHeatmap(Graphics2D g2) {
@@ -1231,6 +1460,7 @@ public final class NetworkPanel extends JPanel {
         Color highColor = heatmapHighColor();
         double maxValue = interpolation.maxValueForScale();
 
+        Map<OverviewEdge, OverviewHeatmap> overview = new HashMap<>();
         for (Map.Entry<String, LinkScreenGeometry> entry : linkScreenGeometries.entrySet()) {
             String linkId = entry.getKey();
             LinkScreenGeometry geometry = entry.getValue();
@@ -1240,19 +1470,38 @@ public final class NetworkPanel extends JPanel {
             }
 
             double valueA = interpolation.currentBinSnapshot().values().getOrDefault(linkId, 0.0);
-            double valueB = interpolation.nextBinSnapshot().values().getOrDefault(linkId, valueA);
-            double value = valueA + (valueB - valueA) * interpolation.alpha();
-            double normalized = heatmapLogNormalized(value, maxValue);
-
-            float roadWidth = (float) Math.max(0.35, Math.min(32.0, geometry.laneWidth() * geometry.laneCount()));
+            double valueB = interpolation.nextBinSnapshot().values().getOrDefault(linkId, 0.0);
+            double normalized = interpolateHeatmapIntensity(valueA, valueB, maxValue, interpolation.alpha());
+            if (networkDetail() == 0) {
+                boolean slowest = visualizationMode == VisualizationMode.SPEED_HEATMAP
+                        || visualizationMode == VisualizationMode.SPEED_RATIO_HEATMAP;
+                overview.merge(OverviewEdge.of(link), new OverviewHeatmap(geometry,
+                                heatmapLogNormalized(valueA, maxValue), heatmapLogNormalized(valueB, maxValue)),
+                        (left, right) -> new OverviewHeatmap(left.geometry(),
+                                aggregateHeatmapIntensity(left.value(), right.value(), slowest),
+                                aggregateHeatmapIntensity(left.nextValue(), right.nextValue(), slowest)));
+                continue;
+            }
+            float roadWidth = (float) roadWidthPixels(geometry);
             g2.setStroke(new BasicStroke(roadWidth, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
             g2.setColor(interpolateColor(lowColor, highColor, normalized));
-            g2.drawLine(
+            RoadTaper taper = roadTapers.get(geometry);
+            if (taper != null) g2.fill(taper.surface());
+            else g2.drawLine(
                     (int) Math.round(geometry.fromX()),
                     (int) Math.round(geometry.fromY()),
                     (int) Math.round(geometry.fromX() + geometry.dx()),
                     (int) Math.round(geometry.fromY() + geometry.dy())
             );
+        }
+        // Collapsed directions show the highest flow or lowest measured speed, independent of draw order.
+        for (OverviewHeatmap aggregate : overview.values()) {
+            LinkScreenGeometry geometry = aggregate.geometry();
+            g2.setStroke(new BasicStroke(0.9f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+            g2.setColor(interpolateColor(lowColor, highColor,
+                    aggregate.value() + (aggregate.nextValue() - aggregate.value()) * interpolation.alpha()));
+            g2.draw(new Line2D.Double(geometry.fromX(), geometry.fromY(),
+                    geometry.fromX() + geometry.dx(), geometry.fromY() + geometry.dy()));
         }
     }
 
@@ -1273,16 +1522,15 @@ public final class NetworkPanel extends JPanel {
 
         for (PtStopPoint stop : model.ptStopsById().values()) {
             double valueA = interpolation.currentBinSnapshot().values().getOrDefault(stop.id(), 0.0);
-            double valueB = interpolation.nextBinSnapshot().values().getOrDefault(stop.id(), valueA);
-            double value = valueA + (valueB - valueA) * interpolation.alpha();
-
+            double valueB = interpolation.nextBinSnapshot().values().getOrDefault(stop.id(), 0.0);
             Point2D.Double screen = worldToScreen(stop.x(), stop.y());
             if (screen.x < -48 || screen.y < -48 || screen.x > getWidth() + 48 || screen.y > getHeight() + 48) {
                 continue;
             }
 
-            double normalized = heatmapLogNormalized(Math.max(0.0, value), safeMaxValue);
-            double eased = smoothstep(normalized);
+            double a = smoothstep(heatmapLogNormalized(valueA, safeMaxValue));
+            double b = smoothstep(heatmapLogNormalized(valueB, safeMaxValue));
+            double eased = a + (b - a) * interpolation.alpha();
             double radius = minRadius + (maxRadius - minRadius) * eased;
             Color color = interpolateColor(lowColor, highColor, eased);
             int fillAlpha = (int) Math.round(50 + 135 * eased);
@@ -1311,6 +1559,20 @@ public final class NetworkPanel extends JPanel {
                     (int) Math.round(radius * 2.0)
             );
         }
+    }
+
+    private static double aggregateHeatmapIntensity(double a, double b, boolean slowest) {
+        if (!slowest) return Math.max(a, b);
+        if (a <= 0) return b;
+        if (b <= 0) return a;
+        return Math.min(a, b);
+    }
+
+    static double interpolateHeatmapIntensity(double a, double b, double scale, double alpha) {
+        // Blend the displayed colours in time, after applying the fixed logarithmic legend scale.
+        double start = heatmapLogNormalized(a, scale);
+        double end = heatmapLogNormalized(b, scale);
+        return start + (end - start) * alpha;
     }
 
     private HeatmapInterpolation resolveHeatmapInterpolation() {
@@ -1572,7 +1834,6 @@ public final class NetworkPanel extends JPanel {
             double baseLengthMeters,
             double widthRatio,
             VehicleShape shape,
-            double modeOffsetFactor,
             boolean queueConstrained,
             boolean isBottleneck
     ) {
@@ -1591,7 +1852,7 @@ public final class NetworkPanel extends JPanel {
 
         double minCenterMeters = vehicleLengthMeters * 0.5;
         double maxCenterMeters = Math.max(minCenterMeters, linkLengthMeters - vehicleLengthMeters * 0.5);
-        double previousCenterMeters = Double.POSITIVE_INFINITY;
+        Map<Integer, Double> previousCenters = new HashMap<>();
 
         for (int i = 0; i < traversals.size(); i++) {
             int traversalIndex = traversals.get(i);
@@ -1601,26 +1862,41 @@ public final class NetworkPanel extends JPanel {
                     Math.min(maxCenterMeters, naturalProgress(traversalIndex, currentTime) * linkLengthMeters)
             );
 
+            int laneIndex = Math.floorMod(model.traversalVehicleId(traversalIndex).hashCode(), laneCount);
+            double previousCenterMeters = previousCenters.getOrDefault(laneIndex, Double.POSITIVE_INFINITY);
             double centerMeters;
-            if (!queueConstrained || i == 0) {
+            if (!queueConstrained || !Double.isFinite(previousCenterMeters)) {
                 centerMeters = naturalCenterMeters;
             } else {
                 centerMeters = Math.min(naturalCenterMeters, previousCenterMeters - vehicleLengthMeters);
                 centerMeters = Math.max(minCenterMeters, centerMeters);
             }
-            previousCenterMeters = centerMeters;
+            previousCenters.put(laneIndex, centerMeters);
 
             double progress = centerMeters / linkLengthMeters;
-            int laneIndex = i % laneCount;
 
             double sx = geometry.fromX() + geometry.dx() * progress;
             double sy = geometry.fromY() + geometry.dy() * progress;
 
             double laneCenterOffset = ((laneIndex + 0.5) - laneCount / 2.0) * geometry.laneWidth();
-        double modeOffset = geometry.laneWidth() * modeOffsetFactor;
-            double laneOffset = laneCenterOffset + modeOffset;
+            double laneOffset = laneCenterOffset * networkDetail();
             sx += geometry.nx() * laneOffset;
             sy += geometry.ny() * laneOffset;
+
+            RoadTaper taper = roadTapers.get(geometry);
+            double vehicleAngle = geometry.angle();
+            double widthScale = 1;
+            if (taper != null) {
+                double fraction = (laneIndex + 0.5) / laneCount - 0.5;
+                var section = taper.section(progress);
+                var point = section.point(fraction);
+                sx = point.x;
+                sy = point.y;
+                var before = taper.section(Math.max(0, progress - 0.001)).point(fraction);
+                var after = taper.section(Math.min(1, progress + 0.001)).point(fraction);
+                vehicleAngle = Math.atan2(after.y - before.y, after.x - before.x);
+                widthScale = Math.min(1, Math.hypot(section.acrossX(), section.acrossY()) / roadWidthPixels(geometry));
+            }
 
             String tripMode = model.traversalTripMode(traversalIndex);
             Color drawColor;
@@ -1641,10 +1917,12 @@ public final class NetworkPanel extends JPanel {
                 vehicleWidthPx = Math.max(minVehicleWidthPixels, vehicleWidthPx);
             }
 
+            vehicleWidthPx = Math.min(vehicleWidthPx, geometry.laneWidth() * 0.90) * networkDetail() * widthScale;
+
             if (vehicleLengthPx < 3.0 && vehicleWidthPx < 3.0) {
                 g2.fillRect((int) Math.round(sx), (int) Math.round(sy), 1, 1);
             } else {
-                drawVehicle(g2, sx, sy, geometry.angle(), vehicleLengthPx, vehicleWidthPx, shape);
+                drawVehicle(g2, sx, sy, vehicleAngle, vehicleLengthPx, vehicleWidthPx, shape);
             }
         }
     }
@@ -1656,7 +1934,7 @@ public final class NetworkPanel extends JPanel {
     }
 
     private void drawQueueLabels(Graphics2D g2) {
-        if (zoom < 1.6) {
+        if (networkDetail() < 1) {
             return;
         }
 
@@ -1690,8 +1968,10 @@ public final class NetworkPanel extends JPanel {
         ensureFitted();
 
         Point2D.Double anchorWorld = screenToWorld(e.getX(), e.getY());
-        double factor = e.getWheelRotation() < 0 ? 1.12 : 0.89;
-        zoom = Math.max(0.2, Math.min(80.0, zoom * factor));
+        double factor = Math.pow(1.15, -e.getPreciseWheelRotation());
+        // Large regional networks must still reach individual-vehicle scale.
+        double maxZoom = Math.max(2048.0, 24.0 / baseScale);
+        zoom = Math.max(0.05, Math.min(maxZoom, zoom * factor));
 
         Point2D.Double anchorScreenAfterZoom = worldToScreen(anchorWorld.x, anchorWorld.y);
         panX += e.getX() - anchorScreenAfterZoom.x;
@@ -1717,7 +1997,7 @@ public final class NetworkPanel extends JPanel {
 
     private void invalidateNetworkCache() {
         cachedNetworkLayer = null;
-        lastNetworkRenderNanos = 0L;
+        cachedRoadLayer = null;
     }
 
     private void invalidateHeatmapCache() {
@@ -1828,10 +2108,11 @@ public final class NetworkPanel extends JPanel {
     }
 
     private void queryVisibleLinks(Set<String> output) {
-        Point2D.Double topLeft = screenToWorld(-VIEWPORT_WORLD_PADDING_PX, -VIEWPORT_WORLD_PADDING_PX);
+        double padding = cacheMargin + Math.max(VIEWPORT_WORLD_PADDING_PX, maxCarriagewayExtent * laneWidthPixels() + 2);
+        Point2D.Double topLeft = screenToWorld(-padding, -padding);
         Point2D.Double bottomRight = screenToWorld(
-                getWidth() + VIEWPORT_WORLD_PADDING_PX,
-                getHeight() + VIEWPORT_WORLD_PADDING_PX
+                getWidth() + padding,
+                getHeight() + padding
         );
 
         double minWorldX = Math.min(topLeft.x, bottomRight.x);
@@ -1884,13 +2165,40 @@ public final class NetworkPanel extends JPanel {
         return selectedTripModes.contains(normalizeMode(tripMode));
     }
 
+    /** Scale in screen pixels per 3.5m lane, independent of fitted network extent. */
+    public double getDetailStartLanePixels() { return detailStartLanePixels; }
+    public double getDetailFullLanePixels() { return detailFullLanePixels; }
+    public double getOverviewVehicleCoverage() { return overviewVehicleCoverage; }
+
+    public void setZoomDetail(double start, double full, double coverage) {
+        if (!Double.isFinite(start) || !Double.isFinite(full) || start <= 0 || full <= start
+                || !Double.isFinite(coverage) || coverage < 0.2 || coverage > 0.9) {
+            throw new IllegalArgumentException("Detail thresholds must be positive, full > start; coverage must be 0.2 to 0.9.");
+        }
+        detailStartLanePixels = start;
+        detailFullLanePixels = full;
+        overviewVehicleCoverage = coverage;
+        invalidateNetworkCache();
+        repaint();
+    }
+
+    private double networkDetail() {
+        return smoothstep((3.5 * baseScale * zoom - detailStartLanePixels) / (detailFullLanePixels - detailStartLanePixels));
+    }
+
+    private double roadWidthPixels(LinkScreenGeometry road) {
+        double detail = networkDetail();
+        return 0.65 + detail * (road.laneWidth() * road.laneCount() - 0.65);
+    }
+
     private double laneWidthPixels() {
-        // Start thin at city-scale view; widen smoothly while zooming in.
-        return Math.max(0.28, Math.min(8.5, 0.09 + 0.20 * Math.pow(zoom, 0.84)));
+        // Width is used only as detail fades in; overview roads ignore lane count.
+        double minimum = keepVehiclesVisibleWhenZoomedOut ? minVehicleWidthPixels / 0.90 : 0.9;
+        return Math.max(minimum, Math.min(64.0, 3.5 * baseScale * zoom));
     }
 
     private int laneCount(LinkSegment link) {
-        return Math.max(1, (int) Math.ceil(link.lanes()));
+        return CarriagewayLayout.lanes(link);
     }
 
     private void drawVehicle(Graphics2D g2, double sx, double sy, double angle,
@@ -1904,7 +2212,7 @@ public final class NetworkPanel extends JPanel {
 
         switch (shape) {
             case RECTANGLE -> {
-                g2.fill(new Rectangle2D.Double(-hl, -hw, length, width));
+                g2.fill(new RoundRectangle2D.Double(-hl, -hw, length, width, Math.min(3, width * 0.4), Math.min(3, width * 0.4)));
             }
             case ARROW -> {
                 // Arrow: tip at front, notched tail
@@ -1934,6 +2242,13 @@ public final class NetworkPanel extends JPanel {
             }
         }
 
+        if ((shape == VehicleShape.RECTANGLE || shape == VehicleShape.OVAL) && length >= 10 && width >= 4) {
+            g2.setColor(new Color(0x182B3A));
+            g2.fill(new Rectangle2D.Double(length * 0.12, -hw * 0.72, length * 0.18, width * 0.72));
+            g2.setColor(new Color(255, 255, 230, 220));
+            g2.fill(new Rectangle2D.Double(hl - 1.4, -hw * 0.72, 1.0, width * 0.22));
+            g2.fill(new Rectangle2D.Double(hl - 1.4, hw * 0.28, 1.0, width * 0.22));
+        }
         g2.setTransform(original);
     }
 
@@ -2056,6 +2371,7 @@ public final class NetworkPanel extends JPanel {
     }
 
     private String legendTitle() {
+        if (visualizationMode == VisualizationMode.VEHICLES && networkDetail() == 0) return "Network overview";
         return switch (visualizationMode) {
             case FLOW_HEATMAP -> "Flow (veh/h)";
             case PT_FLOW_HEATMAP -> "PT Volume (veh/h)";
@@ -2216,6 +2532,18 @@ public final class NetworkPanel extends JPanel {
             List<Integer> railTraversals,
             List<Integer> bikeTraversals
     ) {
+    }
+
+    private record OverviewVehicle(int index, double progress, boolean congested) {}
+
+    private record OverviewHeatmap(LinkScreenGeometry geometry, double value, double nextValue) {}
+
+    private record OverviewEdge(double x1, double y1, double x2, double y2) {
+        static OverviewEdge of(LinkSegment link) {
+            boolean forward = link.fromX() < link.toX() || (link.fromX() == link.toX() && link.fromY() <= link.toY());
+            return forward ? new OverviewEdge(link.fromX(), link.fromY(), link.toX(), link.toY())
+                    : new OverviewEdge(link.toX(), link.toY(), link.fromX(), link.fromY());
+        }
     }
 
     private record LinkScreenGeometry(
