@@ -40,8 +40,9 @@ public final class MatsimIntegrationCheck {
         writer.handleEvent(new LinkLeaveEvent(21, Id.createVehicleId("v"), link.getId()));
         writer.closeFile();
         var events = new MatsimEventsParser().parse(eventsFile);
-        check(events.traversals().length == 1 && events.traversals()[0].enterTimeSeconds() == 11
-                && events.traversals()[0].leaveTimeSeconds() == 21, "Native event traversal times changed");
+        check(events.traversals().length == 2 && events.traversals()[0].enterTimeSeconds() == 10
+                && events.traversals()[0].leaveTimeSeconds() == 11
+                && events.traversals()[1].enterTimeSeconds() == 11 && events.traversals()[1].leaveTimeSeconds() == 21, "Native event traversal times changed");
         check("car".equals(events.vehicleToMode().get("v")), "Typed event mode not preserved");
 
         var scenario = ScenarioUtils.createScenario(ConfigUtils.createConfig());

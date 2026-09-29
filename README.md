@@ -150,7 +150,7 @@ render.java2d.force.vram=false
 - Recording quality now preserves viewport aspect ratio (no stretching/skew).
 - `Viewport native (app sync)` captures at viewport resolution and app frame cadence.
 - Default recording preset: `Presentation 4K / 15 fps` renders directly at 3840x2160 and advances playback by fixed video-frame steps.
-- Frames are saved as temporary lossless PNG files during recording and encoded after stop on a background thread, keeping image memory bounded.
+- Frames are buffered in bounded RAM; overflow is written as lossless PNG on a worker. H.264 encoding runs after Stop. The live preview reuses the high-resolution road background during recording.
 - Final output uses H.264/AVC in `.mp4` with 8-bit YUV 4:2:0 for Windows player compatibility.
 - `Network Modes` panel: checkbox multi-select of one or more link modes to render
 - `Trip Modes` panel: checkbox multi-select of one or more trip modes to render
@@ -164,7 +164,7 @@ render.java2d.force.vram=false
 - Default startup filters show only `car`, `bike`, and `truck`-like modes for both network links and vehicle trips
 - Mouse wheel: zoom
 - Left-click + drag: pan
-- `Show Link Queues`: toggle queue labels
+- `Show link vehicle counts`: toggle link occupancy labels
 
 ## MATSim Integration
 
@@ -203,10 +203,23 @@ Other presets continue to capture live playback at their requested cadence.
 
 The output is a high-quality H.264 MP4 (fixed QP 18), with some compression loss.
 It uses standard limited-range YUV 4:2:0 and resolution-appropriate H.264 level metadata.
-No FFmpeg installation is required. Temporary PNG frames are stored beside
-it in `recording-frames-*`, then removed after successful encoding. Allow disk space
-for both temporary frames and the final video. If encoding fails, frames remain for
-recovery. Older PNG-in-MOV exports must be re-exported or transcoded; renaming them
+No FFmpeg installation is required. Recording uses a RAM buffer (512 MiB preference,
+automatically reduced according to Java heap headroom). Two bounded spill slots are
+reserved; overflow is compressed as **lossless PNG on a background worker**, using
+fast compression. If the worker falls behind, capture waits instead of dropping
+frames or growing the queue indefinitely. One 4K RGB frame occupies about 32 MiB.
+The renderer reuses its full-resolution background for the screen preview, avoiding
+repeated road/map rebuilds between captures. Resolution, frame timing, H.264 QP 18
+and Windows-compatible YUV 4:2:0 remain unchanged.
+
+Set the optional JVM property `-Dmatsim.recording.bufferMiB=1024` to request more RAM
+(up to 4096 MiB; the heap/headroom limits still apply). This is a JVM option, not a
+MATSim config parameter. Longer recordings still need disk space: temporary PNG
+frames are stored in `recording-frames-*` beside the movie. RAM frames go directly
+to the encoder after Stop, without PNG encoding/decoding. Temporary files are removed
+after success. On export failure, RAM frames are also written as PNG for recovery
+when disk space permits. RAM-only frames do not survive an application crash.
+Older PNG-in-MOV exports must be re-exported or transcoded; renaming them
 to `.mp4` does not change the codec.
 
 A round-trip test verifies 4K dimensions, 15 fps timing, H.264 decoding and image fidelity,
@@ -386,3 +399,28 @@ Transit edits remain in the editor session when returning to playback.
 Navigation reuses a padded raster during drags and wheel zoom, then redraws sharp
 geometry after the wheel settles. Opening uses a small edit layer over the loaded
 network instead of copying its maps. Transit files are loaded only when requested.
+
+### Lane width and bus event interpretation
+
+In Display settings, **Carriageway spacing** defaults to `0.1`. **Lane width (m,
+display only)** adjusts the rendered lane width from 1 to 8 metres (default 3.5).
+The corresponding defaults are `ui.bidirectional.offset` and `ui.lane.width.m`.
+This changes appearance, not MATSim network capacities or lane counts.
+
+The viewer uses native MATSim event handlers for vehicle movements. Transit
+schedule modes take priority over the traffic engine mode: a scheduled bus emitting
+`networkMode="car"` is still displayed as a bus. Passenger boarding does not create
+additional bus movements. First links use `VehicleEntersTrafficEvent`; subsequent
+links use link-entry/exit events. Instantaneous crossings are not artificially
+extended, and boarding/alighting stops are cleared when vehicles depart a facility.
+Services with only facility/teleportation events are not invented as road traffic.
+Deterministic services emitting link events can be displayed from those events.
+
+**Show link vehicle counts** reports occupancy, not a measured stationary queue.
+Positions between link events are interpolated; event files do not give exact lane
+positions, and stop dwell is included in link travel time. Closely spaced bus shapes
+therefore should not be interpreted as an exact physical queue. Changed event-reader
+code automatically invalidates the parsed-data cache on the next normal launch.
+
+See [the Geneva bus event audit](docs/BUS_EVENT_AUDIT.md) for the inspected run,
+concrete bus occupancy examples and event-handling regression checks.

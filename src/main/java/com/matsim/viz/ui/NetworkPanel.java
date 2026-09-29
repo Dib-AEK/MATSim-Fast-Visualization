@@ -116,7 +116,8 @@ public final class NetworkPanel extends JPanel {
     private boolean suppressOverlays = false;
     private boolean showBottleneck;
     private double bottleneckDivisor = 6.0;
-    private double bidirectionalOffset = 0.45;
+    private double bidirectionalOffset = 0.1;
+    private double laneWidthMeters = 3.5;
     private double detailStartLanePixels = 0.3;
     private double detailFullLanePixels = 1.5;
     private double overviewVehicleCoverage = 0.75;
@@ -179,6 +180,13 @@ public final class NetworkPanel extends JPanel {
     private float roadOpacity = 1f;
     private boolean mapTilesDirty;
     private boolean recordingFrame;
+    private boolean recordingActive;
+    public void setRecordingActive(boolean active) {
+        if(recordingActive==active)return;
+        recordingActive=active;
+        if(!active)invalidateNetworkCache();
+        repaint();
+    }
 
     private Point dragStart;
 
@@ -724,6 +732,13 @@ public final class NetworkPanel extends JPanel {
     public VehicleShape getRailShape() { return railShape; }
     public void setRailShape(VehicleShape s) { this.railShape = s; repaint(); }
 
+    public double getLaneWidthMeters() { return laneWidthMeters; }
+    public void setLaneWidthMeters(double width) {
+        if (!Double.isFinite(width)) throw new IllegalArgumentException("Lane width must be finite");
+        laneWidthMeters = Math.max(1.0, Math.min(8.0, width));
+        invalidateNetworkCache(); repaint();
+    }
+
     public void setBidirectionalOffset(double offset) {
         this.bidirectionalOffset = Math.max(0.0, Math.min(1.0, offset));
         invalidateNetworkCache();
@@ -1081,10 +1096,10 @@ public final class NetworkPanel extends JPanel {
     }
 
     private void renderNetworkLayerIfNeeded() {
-        int desiredMargin = recordingFrame ? 0 : Math.min(384, Math.max(128, Math.min(getWidth(), getHeight()) / 2));
+        int desiredMargin = recordingFrame || recordingActive ? 0 : Math.min(384, Math.max(128, Math.min(getWidth(), getHeight()) / 2));
         if (cachedNetworkLayer != null
                 && cacheMargin == desiredMargin
-                && cachedRasterScale == networkRasterScale
+                && (cachedRasterScale == networkRasterScale || (recordingActive && cachedRasterScale >= networkRasterScale))
                 && cachedZoom == zoom
                 && cachedWidth == getWidth()
                 && cachedHeight == getHeight()) {
@@ -2194,7 +2209,7 @@ public final class NetworkPanel extends JPanel {
     private double laneWidthPixels() {
         // Width is used only as detail fades in; overview roads ignore lane count.
         double minimum = keepVehiclesVisibleWhenZoomedOut ? minVehicleWidthPixels / 0.90 : 0.9;
-        return Math.max(minimum, Math.min(64.0, 3.5 * baseScale * zoom));
+        return Math.max(minimum, Math.min(64.0, laneWidthMeters * baseScale * zoom));
     }
 
     private int laneCount(LinkSegment link) {

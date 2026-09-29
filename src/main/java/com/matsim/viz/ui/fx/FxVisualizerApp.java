@@ -1166,7 +1166,7 @@ public final class FxVisualizerApp extends Application {
             }
         });
 
-        CheckBox queueToggle = new CheckBox("Show Link Queues");
+        CheckBox queueToggle = new CheckBox("Show link vehicle counts");
         queueToggle.setSelected(false);
         queueToggle.setOnAction(e -> runOnEdt(() -> networkPanel.setShowQueues(queueToggle.isSelected())));
 
@@ -1178,6 +1178,16 @@ public final class FxVisualizerApp extends Application {
         offsetSlider.valueProperty().addListener((obs, oldValue, newValue) -> {
             runOnEdt(() -> networkPanel.setBidirectionalOffset(newValue.doubleValue()));
             offsetValue.setText(String.format("%.2f", newValue.doubleValue()));
+        });
+
+        Label laneWidthCaption = new Label("Lane width (m, display only)");
+        laneWidthCaption.getStyleClass().add("field-caption");
+        Slider laneWidthSlider = new Slider(1.0, 8.0, getOnEdt(networkPanel::getLaneWidthMeters));
+        Label laneWidthValue = new Label(String.format("%.2f m", laneWidthSlider.getValue()));
+        laneWidthValue.getStyleClass().add("mono-value");
+        laneWidthSlider.valueProperty().addListener((obs, oldValue, newValue) -> {
+            runOnEdt(() -> networkPanel.setLaneWidthMeters(newValue.doubleValue()));
+            laneWidthValue.setText(String.format("%.2f m", newValue.doubleValue()));
         });
 
         final Stage[] colorSettingsWindow = {null};
@@ -1202,6 +1212,7 @@ public final class FxVisualizerApp extends Application {
             offsetCaption,
             offsetSlider,
             offsetValue,
+            laneWidthCaption, laneWidthSlider, laneWidthValue,
             colorSettingsButton
         );
         return card;
@@ -1881,6 +1892,7 @@ public final class FxVisualizerApp extends Application {
             networkPanel.setVisualizationMode(parseVisualizationMode(config.uiVisualizationMode(), NetworkPanel.VisualizationMode.VEHICLES));
             networkPanel.setShowQueues(config.uiShowQueues());
             networkPanel.setBidirectionalOffset(config.uiBidirectionalOffset());
+            networkPanel.setLaneWidthMeters(config.uiLaneWidthMeters());
             networkPanel.setShowBottleneck(config.uiShowBottleneck());
             networkPanel.setBottleneckDivisor(config.uiBottleneckDivisor());
             networkPanel.setHeatmapTimeBinSeconds(config.uiHeatmapTimeBinSeconds());

@@ -4,13 +4,10 @@ import java.awt.DisplayMode;
 import java.awt.GraphicsDevice;
 import java.awt.GraphicsEnvironment;
 import java.awt.Graphics2D;
-import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutionException;
@@ -75,13 +72,19 @@ public final class PanelVideoRecorder {
     private volatile int recordingFps;
     private volatile int targetWidth;
     private volatile int targetHeight;
-    private BufferedImage captureBuffer;
+    private NetworkPanel capturePanel;
     private Path frameDirectory;
     private volatile IOException captureFailure;
-    private List<Path> queuedFrames = new ArrayList<>();
+    private RecordingFrameStore queuedFrames;
+    private final long bufferBudget;
 
     public PanelVideoRecorder(Path outputDir) {
+        this(outputDir, RecordingFrameStore.defaultBudget());
+    }
+
+    PanelVideoRecorder(Path outputDir,long bufferBudget) {
         this.outputDir = outputDir.toAbsolutePath().normalize();
+        this.bufferBudget = bufferBudget;
     }
 
     public synchronized void start(Quality quality) throws IOException {
@@ -104,13 +107,14 @@ public final class PanelVideoRecorder {
             this.lastCaptureNanos = 0;
             this.targetWidth = -1;
             this.targetHeight = -1;
-            this.captureBuffer = null;
+            this.capturePanel = null;
             this.captureFailure = null;
-            this.queuedFrames = new ArrayList<>(4096);
+
         }
 
         Files.createDirectories(outputDir);
         frameDirectory = Files.createTempDirectory(outputDir, "recording-frames-");
+        queuedFrames = new RecordingFrameStore(frameDirectory,bufferBudget);
         String timestamp = java.time.LocalDateTime.now()
                 .format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss_SSS"));
         String qualityTag = quality.name().toLowerCase();
@@ -147,19 +151,18 @@ public final class PanelVideoRecorder {
         synchronized (stateLock) {
             if (!recording || captureFailure != null) return;
             try {
-                ensureCaptureBuffer(pw, ph);
-                Graphics2D graphics = captureBuffer.createGraphics();
+                ensureCaptureDimensions(pw, ph);
+                boolean memory=queuedFrames.reserve(targetWidth,targetHeight);
+                boolean submitted=false;
                 try {
-                    panel.paintRecordingFrame(graphics, targetWidth, targetHeight);
-                } finally {
-                    graphics.dispose();
-                }
-                Path frame = frameDirectory.resolve(String.format("frame-%08d.png", frameCount));
-                if (!ImageIO.write(captureBuffer, "png", frame.toFile())) {
-                    throw new IOException("No PNG writer is available");
-                }
-                queuedFrames.add(frame);
-                frameCount = queuedFrames.size();
+                    BufferedImage frame=new BufferedImage(targetWidth,targetHeight,BufferedImage.TYPE_INT_RGB);
+                    capturePanel=panel;
+                    panel.setRecordingActive(true);
+                    Graphics2D graphics=frame.createGraphics();
+                    try {panel.paintRecordingFrame(graphics,targetWidth,targetHeight);}finally {graphics.dispose();}
+                    queuedFrames.add(frame,memory);submitted=true;
+                    frameCount=queuedFrames.size();
+                } finally {if(!submitted)queuedFrames.cancelReservation(memory);}
             } catch (IOException ex) {
                 captureFailure = ex;
             }
@@ -177,7 +180,7 @@ public final class PanelVideoRecorder {
     public CompletableFuture<Path> stopAsync() {
         final Path outputPath;
         final int fps;
-        final List<Path> framesToEncode;
+        final RecordingFrameStore framesToEncode;
         final Path spool;
         final IOException failure;
 
@@ -192,33 +195,37 @@ public final class PanelVideoRecorder {
             framesToEncode = queuedFrames;
             spool = frameDirectory;
             failure = captureFailure;
-            queuedFrames = new ArrayList<>();
+            queuedFrames = null;
+            framesToEncode.finish();
 
-            captureBuffer = null;
+            NetworkPanel panel=capturePanel;capturePanel=null;
+            if(panel!=null)javax.swing.SwingUtilities.invokeLater(()->panel.setRecordingActive(false));
 
         }
 
         return CompletableFuture.supplyAsync(() -> {
             try {
+                framesToEncode.awaitWrites();
                 if (failure != null) {
                     throw new IOException("Capture failed. Completed PNG frames are preserved in " + spool, failure);
                 }
-                if (framesToEncode.isEmpty()) {
+                if (framesToEncode.size()==0) {
                     Files.deleteIfExists(spool);
                     return null;
                 }
-                encodeQueuedFrames(outputPath, fps, framesToEncode);
+                H264Mp4Encoder.encode(outputPath,fps,framesToEncode.size(),framesToEncode::read);
                 // Delete only files created by this recording, after a successful encode.
-                for (Path frame : framesToEncode) Files.deleteIfExists(frame);
-                Files.deleteIfExists(spool);
+                framesToEncode.cleanup();
                 System.out.printf("Video saved: %s (%d frames, %d fps, H.264 MP4)\n",
                         outputPath,
                         framesToEncode.size(),
                         fps);
                 return outputPath;
-            } catch (IOException ex) {
+            } catch (Exception ex) {
+                try {framesToEncode.preserve();}catch(IOException recovery){ex.addSuppressed(recovery);}
                 throw new CompletionException(new IOException("Video export failed; source frames are in " + spool, ex));
             } finally {
+                framesToEncode.release();
                 synchronized (stateLock) {
                     encoding = false;
                     frameCount = 0;
@@ -264,7 +271,7 @@ public final class PanelVideoRecorder {
         }
     }
 
-    private void ensureCaptureBuffer(int panelWidth, int panelHeight) {
+    private void ensureCaptureDimensions(int panelWidth, int panelHeight) {
         if (targetWidth <= 0 || targetHeight <= 0) {
             if (quality != null && quality.isViewportNative()) {
                 targetWidth = evenDimension(panelWidth);
@@ -275,22 +282,11 @@ public final class PanelVideoRecorder {
             }
         }
 
-        if (captureBuffer != null
-                && captureBuffer.getWidth() == targetWidth
-                && captureBuffer.getHeight() == targetHeight) {
-            return;
-        }
-
-        captureBuffer = new BufferedImage(targetWidth, targetHeight, BufferedImage.TYPE_INT_RGB);
     }
 
     private static int evenDimension(int value) {
         int clamped = Math.max(2, value);
         return (clamped & 1) == 0 ? clamped : clamped - 1;
-    }
-
-    private static void encodeQueuedFrames(Path outputPath, int fps, List<Path> frames) throws IOException {
-        H264Mp4Encoder.encode(outputPath, fps, frames);
     }
 
     private static int detectDisplayRefreshRate() {

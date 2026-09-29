@@ -22,7 +22,11 @@ import java.util.List;
 final class H264Mp4Encoder {
     private H264Mp4Encoder() { }
 
+    @FunctionalInterface interface FrameReader { java.awt.image.BufferedImage read(int index) throws IOException; }
     static void encode(Path output, int fps, List<Path> frames) throws IOException {
+        encode(output,fps,frames.size(),index->ImageIO.read(frames.get(index).toFile()));
+    }
+    static void encode(Path output, int fps, int count, FrameReader frames) throws IOException {
         // Fixed QP 18 prioritizes fine road/vehicle detail over a small file size.
         H264Encoder encoder = new H264Encoder(new RateControl() {
             public int startPicture(Size size, int maxSize, SliceType type) { return 18; }
@@ -54,9 +58,9 @@ final class H264Mp4Encoder {
             org.jcodec.common.MuxerTrack track = null;
             ByteBuffer buffer = null;
             int frameNumber = 0;
-            for (Path path : frames) {
-                var frame = ImageIO.read(path.toFile());
-                if (frame == null) throw new IOException("Cannot read frame: " + path);
+            for (int index=0;index<count;index++) {
+                var frame = frames.read(index);
+                if (frame == null) throw new IOException("Cannot read frame: " + index);
                 try {
                     Picture yuv = AWTUtil.fromBufferedImage(frame, ColorSpace.YUV420);
                     // Encoder accepts only the YUV420J tag, but encodes plane values unchanged.

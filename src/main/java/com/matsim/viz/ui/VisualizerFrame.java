@@ -99,7 +99,7 @@ public final class VisualizerFrame extends JFrame {
             }
         });
 
-        JCheckBox queuesCheckbox = new JCheckBox("Show Link Queues", false);
+        JCheckBox queuesCheckbox = new JCheckBox("Show link vehicle counts", false);
         queuesCheckbox.addActionListener(e -> networkPanel.setShowQueues(queuesCheckbox.isSelected()));
 
         timeLabel = new JLabel();

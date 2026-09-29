@@ -115,6 +115,13 @@ public final class ZoomDetailCheck {
                 check((double) call(wide, "networkDetail", new Class<?>[0]) == 0, "Overview did not return after zooming out");
                 wide.setVisualizationMode(NetworkPanel.VisualizationMode.SPEED_HEATMAP);
                 check("Speed (km/h)".equals(call(wide, "legendTitle", new Class<?>[0])), "Overview hid heatmap units");
+                var lanePanel=panel(2,true);render(lanePanel);wheel(lanePanel,-34);render(lanePanel);
+                double laneBefore=(double)call(lanePanel,"laneWidthPixels",new Class<?>[0]);
+                lanePanel.setLaneWidthMeters(7);render(lanePanel);
+                double laneAfter=(double)call(lanePanel,"laneWidthPixels",new Class<?>[0]);
+                check(Math.abs(laneAfter-2*laneBefore)<1e-6,"Lane width control did not scale geometry");
+                boolean invalidWidth=false;try{lanePanel.setLaneWidthMeters(Double.NaN);}catch(IllegalArgumentException expected){invalidWidth=true;}
+                check(invalidWidth,"Invalid lane width accepted");
                 System.out.println("PASS: thin centerlines, visible congestion, progressive detail, zoom >80x and cursor anchoring.");
             } catch (Exception ex) { throw new RuntimeException(ex); }
         });

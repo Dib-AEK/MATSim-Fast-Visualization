@@ -54,6 +54,16 @@ public final class RecordingQualityCheck {
                 }
             }
             check(roadOutsideOldImage, "4K frame is still a small image inside a large canvas");
+            try {
+                var cacheField=NetworkPanel.class.getDeclaredField("cachedNetworkLayer");cacheField.setAccessible(true);
+                Object highResolutionCache=cacheField.get(panel);
+                BufferedImage preview=new BufferedImage(960,600,BufferedImage.TYPE_INT_RGB);
+                Graphics2D pg=preview.createGraphics();panel.paint(pg);pg.dispose();
+                check(cacheField.get(panel)==highResolutionCache,"Live preview rebuilt the 4K background");
+                Graphics2D rg=reference.createGraphics();panel.paintRecordingFrame(rg,3840,2160);rg.dispose();
+                check(cacheField.get(panel)==highResolutionCache,"Recording rebuilt background after preview");
+            }catch(ReflectiveOperationException e){throw new RuntimeException(e);}
+            panel.setRecordingActive(false);
             BufferedImage after = new BufferedImage(960, 600, BufferedImage.TYPE_INT_RGB);
             screen = after.createGraphics();
             panel.paint(screen);

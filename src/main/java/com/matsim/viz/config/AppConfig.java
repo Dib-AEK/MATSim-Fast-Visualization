@@ -15,6 +15,7 @@ public record AppConfig(
         String uiColorMode,
         boolean uiShowQueues,
         double uiBidirectionalOffset,
+        double uiLaneWidthMeters,
         boolean uiShowBottleneck,
         double uiBottleneckDivisor,
         boolean uiKeepVehiclesVisibleWhenZoomedOut,

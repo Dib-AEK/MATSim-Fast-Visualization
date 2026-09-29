@@ -4,6 +4,8 @@ import com.matsim.viz.domain.PtStopInteraction;
 import com.matsim.viz.domain.VehicleTraversal;
 import org.matsim.api.core.v01.Id;
 import org.matsim.api.core.v01.events.LinkEnterEvent;
+import org.matsim.api.core.v01.events.VehicleAbortsEvent;
+import org.matsim.api.core.v01.events.handler.VehicleAbortsEventHandler;
 import org.matsim.api.core.v01.events.LinkLeaveEvent;
 import org.matsim.api.core.v01.events.PersonDepartureEvent;
 import org.matsim.api.core.v01.events.PersonEntersVehicleEvent;
@@ -20,6 +22,8 @@ import org.matsim.api.core.v01.events.handler.TransitDriverStartsEventHandler;
 import org.matsim.api.core.v01.events.handler.VehicleEntersTrafficEventHandler;
 import org.matsim.api.core.v01.events.handler.VehicleLeavesTrafficEventHandler;
 import org.matsim.core.api.experimental.events.VehicleArrivesAtFacilityEvent;
+import org.matsim.core.api.experimental.events.VehicleDepartsAtFacilityEvent;
+import org.matsim.core.api.experimental.events.handler.VehicleDepartsAtFacilityEventHandler;
 import org.matsim.core.api.experimental.events.handler.VehicleArrivesAtFacilityEventHandler;
 import org.matsim.vehicles.Vehicle;
 
@@ -32,7 +36,7 @@ import java.util.Map;
 import java.util.Set;
 
 public final class MatsimEventsCollector implements
-        LinkEnterEventHandler,
+        LinkEnterEventHandler, VehicleAbortsEventHandler,
         LinkLeaveEventHandler,
         VehicleEntersTrafficEventHandler,
         VehicleLeavesTrafficEventHandler,
@@ -40,7 +44,7 @@ public final class MatsimEventsCollector implements
         PersonEntersVehicleEventHandler,
         PersonLeavesVehicleEventHandler,
         TransitDriverStartsEventHandler,
-        VehicleArrivesAtFacilityEventHandler {
+        VehicleArrivesAtFacilityEventHandler, VehicleDepartsAtFacilityEventHandler {
 
     private final Map<Id<Vehicle>, ActiveLinkState> activeByVehicle = new HashMap<>(64_000);
     private final Map<Id<Vehicle>, String> currentStopByVehicle = new HashMap<>(32_000);
@@ -66,7 +70,9 @@ public final class MatsimEventsCollector implements
         String linkId = event.getLinkId().toString();
         double time = event.getTime();
 
-        ActiveLinkState previous = activeByVehicle.put(vehicleId, new ActiveLinkState(linkId, time));
+        ActiveLinkState previous = activeByVehicle.get(vehicleId);
+        if (previous != null && previous.linkId().equals(linkId) && previous.enterTimeSeconds() == time) return;
+        activeByVehicle.put(vehicleId, new ActiveLinkState(linkId, time));
         if (previous != null) {
             appendTraversal(vehicleId.toString(), previous.linkId(), previous.enterTimeSeconds(), time);
         }
@@ -75,8 +81,9 @@ public final class MatsimEventsCollector implements
     @Override
     public void handleEvent(LinkLeaveEvent event) {
         Id<Vehicle> vehicleId = event.getVehicleId();
-        ActiveLinkState entered = activeByVehicle.remove(vehicleId);
-        if (entered != null) {
+        ActiveLinkState entered = activeByVehicle.get(vehicleId);
+        if (entered != null && entered.linkId().equals(event.getLinkId().toString())) {
+            activeByVehicle.remove(vehicleId);
             appendTraversal(vehicleId.toString(), entered.linkId(), entered.enterTimeSeconds(), event.getTime());
         }
     }
@@ -92,6 +99,13 @@ public final class MatsimEventsCollector implements
     }
 
     @Override
+    public void handleEvent(VehicleAbortsEvent event) {
+        ActiveLinkState entered=activeByVehicle.remove(event.getVehicleId());
+        currentStopByVehicle.remove(event.getVehicleId());
+        if (entered!=null) appendTraversal(event.getVehicleId().toString(), entered.linkId(), entered.enterTimeSeconds(), event.getTime());
+    }
+
+    @Override
     public void handleEvent(VehicleArrivesAtFacilityEvent event) {
         if (event.getFacilityId() == null) {
             return;
@@ -100,12 +114,20 @@ public final class MatsimEventsCollector implements
     }
 
     @Override
+    public void handleEvent(VehicleDepartsAtFacilityEvent event) {
+        currentStopByVehicle.remove(event.getVehicleId());
+    }
+
+    @Override
     public void handleEvent(VehicleEntersTrafficEvent event) {
         String vehicleId = event.getVehicleId().toString();
         String personId = event.getPersonId().toString();
-        vehicleToPerson.putIfAbsent(vehicleId, personId);
+        vehicleToPerson.put(vehicleId, personId);
+        // First links have vehicle-enters-traffic, often without a LinkEnterEvent.
+        activeByVehicle.put(event.getVehicleId(), new ActiveLinkState(event.getLinkId().toString(), event.getTime()));
 
         String mode = firstNonBlank(
+                normalizeMode(knownVehicleModes.get(vehicleId)),
                 normalizeMode(event.getNetworkMode()),
                 normalizeMode(event.getAttributes().get("legMode")),
                 personToLatestMode.get(personId)
@@ -123,10 +145,11 @@ public final class MatsimEventsCollector implements
             return;
         }
 
-        vehicleToPerson.putIfAbsent(vehicleId, personId);
-        String mode = personToLatestMode.get(personId);
-        if (mode != null) {
-            vehicleToMode.putIfAbsent(vehicleId, mode);
+        // A passenger is not a second bus or the owner/driver of the transit vehicle.
+        if (!knownVehicleModes.containsKey(vehicleId)) {
+            vehicleToPerson.putIfAbsent(vehicleId, personId);
+            String mode = personToLatestMode.get(personId);
+            if (mode != null) vehicleToMode.putIfAbsent(vehicleId, mode);
         }
 
         appendPtStopInteractionIfKnown(event.getVehicleId(), event.getTime(), true);
@@ -145,6 +168,10 @@ public final class MatsimEventsCollector implements
     public void handleEvent(TransitDriverStartsEvent event) {
         if (event.getDriverId() != null) {
             transitDriverPersonIds.add(event.getDriverId().toString());
+            vehicleToPerson.put(event.getVehicleId().toString(),event.getDriverId().toString());
+            // Never bridge an unfinished movement into the next use of the same bus.
+            activeByVehicle.remove(event.getVehicleId());
+            currentStopByVehicle.remove(event.getVehicleId());
         }
     }
 
@@ -188,8 +215,10 @@ public final class MatsimEventsCollector implements
     }
 
     private void appendTraversal(String vehicleId, String linkId, double enter, double leave) {
-        double safeLeave = Math.max(leave, enter + 0.05);
-        traversals.add(new VehicleTraversal(traversals.size(), vehicleId, linkId, enter, safeLeave));
+        // Zero-duration transitions have no visible occupancy. Extending them creates
+        // multiple simultaneous copies when a deterministic service crosses links at one time.
+        if (!Double.isFinite(enter) || !Double.isFinite(leave) || leave <= enter) return;
+        traversals.add(new VehicleTraversal(traversals.size(), vehicleId, linkId, enter, leave));
     }
 
     private void appendPtStopInteractionIfKnown(Id<Vehicle> vehicleId, double time, boolean boarding) {
@@ -200,8 +229,8 @@ public final class MatsimEventsCollector implements
 
         String vehicleIdStr = vehicleId.toString();
         String mode = firstNonBlank(
-                normalizeMode(vehicleToMode.get(vehicleIdStr)),
-                normalizeMode(knownVehicleModes.get(vehicleIdStr))
+                normalizeMode(knownVehicleModes.get(vehicleIdStr)),
+                normalizeMode(vehicleToMode.get(vehicleIdStr))
         );
         if (mode == null) {
             return;
