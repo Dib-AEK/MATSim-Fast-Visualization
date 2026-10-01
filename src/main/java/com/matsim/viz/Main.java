@@ -1,5 +1,6 @@
 package com.matsim.viz;
 
+import com.matsim.viz.config.AppDefaults;
 import com.matsim.viz.cache.CachedSimulationData;
 import com.matsim.viz.cache.SimulationCacheStore;
 import com.matsim.viz.cache.SimulationFingerprint;
@@ -36,7 +37,7 @@ public final class Main {
         long startNanos = System.nanoTime();
         RunOptions options = RunOptions.parse(args);
 
-        Path configPath = Path.of("config", "app.properties").toAbsolutePath();
+        Path configPath = Path.of(AppDefaults.Paths.APP_CONFIG).toAbsolutePath();
         AppConfig config = ConfigLoader.load(configPath);
         configureRenderingBackend(config);
         MatsimScenarioLoader scenarioLoader = new MatsimScenarioLoader();
@@ -202,7 +203,7 @@ public final class Main {
 
         cached = null;
 
-        double sampleSize = 1.0;
+        double sampleSize = AppDefaults.Display.SAMPLE_SIZE;
         try {
             var eqasimModule = inputs.matsimConfig().getModules().get("eqasim");
             if (eqasimModule != null) {
@@ -226,7 +227,7 @@ public final class Main {
 
     private static void configureRenderingBackend(AppConfig config) {
         String backend = config.renderBackend() == null
-                ? "auto"
+                ? AppDefaults.Rendering.BACKEND
                 : config.renderBackend().trim().toLowerCase();
 
         String os = System.getProperty("os.name", "").toLowerCase();
@@ -253,7 +254,7 @@ public final class Main {
                 System.out.println("Unknown render.backend='" + backend + "'. Falling back to auto mode.");
                 System.setProperty("prism.order", prismOrder);
                 configureJava2dAcceleration(config.java2dPipeline(), config.java2dForceVram());
-                backend = "auto";
+                backend = AppDefaults.Rendering.BACKEND;
             }
         }
 
@@ -262,7 +263,7 @@ public final class Main {
 
     private static void configureJava2dAcceleration(String configuredPipeline, boolean forceVram) {
         String pipeline = configuredPipeline == null
-                ? "auto"
+                ? AppDefaults.Rendering.JAVA2D_PIPELINE
                 : configuredPipeline.trim().toLowerCase();
 
         switch (pipeline) {

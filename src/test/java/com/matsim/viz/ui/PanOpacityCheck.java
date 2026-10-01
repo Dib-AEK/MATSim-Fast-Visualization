@@ -39,6 +39,7 @@ public final class PanOpacityCheck {
                 NetworkPanel panel = new NetworkPanel(model,new PlaybackController(model,0,100,1));
                 panel.setSize(1000,800);
                 panel.setMapBackground(Color.BLACK); panel.setMapRoad(Color.WHITE);
+                panel.setRoadOpacity(1); // Controlled opaque baseline, independent of the user's default opacity.
                 BufferedImage opaque = paint(panel);
                 Object layer = field(panel,"cachedRoadLayer");
                 panel.setRoadOpacity(0);

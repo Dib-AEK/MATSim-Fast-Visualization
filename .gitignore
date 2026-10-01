@@ -28,3 +28,5 @@ replay_pid*
 cache/*
 
 target/*
+# Optional local FFmpeg installation (scripts/install-ffmpeg.ps1)
+tools/ffmpeg/

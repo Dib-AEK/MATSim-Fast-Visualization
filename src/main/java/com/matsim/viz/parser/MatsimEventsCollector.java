@@ -1,5 +1,6 @@
 package com.matsim.viz.parser;
 
+import com.matsim.viz.config.AppDefaults;
 import com.matsim.viz.domain.PtStopInteraction;
 import com.matsim.viz.domain.VehicleTraversal;
 import org.matsim.api.core.v01.Id;
@@ -46,15 +47,15 @@ public final class MatsimEventsCollector implements
         TransitDriverStartsEventHandler,
         VehicleArrivesAtFacilityEventHandler, VehicleDepartsAtFacilityEventHandler {
 
-    private final Map<Id<Vehicle>, ActiveLinkState> activeByVehicle = new HashMap<>(64_000);
-    private final Map<Id<Vehicle>, String> currentStopByVehicle = new HashMap<>(32_000);
+    private final Map<Id<Vehicle>, ActiveLinkState> activeByVehicle = new HashMap<>(AppDefaults.Parsing.ACTIVE_VEHICLES);
+    private final Map<Id<Vehicle>, String> currentStopByVehicle = new HashMap<>(AppDefaults.Parsing.STOP_VEHICLES);
     private final Map<String, String> knownVehicleModes;
     private final Map<String, String> vehicleToPerson = new HashMap<>();
     private final Map<String, String> vehicleToMode = new HashMap<>();
     private final Map<String, String> personToLatestMode = new HashMap<>();
     private final Set<String> transitDriverPersonIds = new HashSet<>();
-    private final List<VehicleTraversal> traversals = new ArrayList<>(1_000_000);
-    private final List<PtStopInteraction> ptStopInteractions = new ArrayList<>(256_000);
+    private final List<VehicleTraversal> traversals = new ArrayList<>(AppDefaults.Parsing.TRAVERSALS);
+    private final List<PtStopInteraction> ptStopInteractions = new ArrayList<>(AppDefaults.Parsing.STOP_INTERACTIONS);
 
     public MatsimEventsCollector() {
         this(Map.of());

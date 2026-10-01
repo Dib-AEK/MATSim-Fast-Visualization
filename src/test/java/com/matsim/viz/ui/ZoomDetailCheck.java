@@ -85,7 +85,8 @@ public final class ZoomDetailCheck {
                     int rgb = congested.getRGB(x, y);
                     if (((rgb >> 16) & 255) > 120 && ((rgb >> 8) & 255) < 90) redPixels++;
                 }
-                check(redPixels > 1 && redPixels < 30, "Overview vehicle is missing or paints the whole link");
+                double markerArea = (wide.getMinVehicleLengthPixels() + 2) * (wide.getMinVehicleWidthPixels() + 2);
+                check(redPixels > 1 && redPixels <= markerArea, "Overview vehicle is missing or paints beyond its marker size");
                 ImageIO.write(congested, "png", Path.of("target/zoom-overview.png").toFile());
                 Point2D.Double anchor = (Point2D.Double) call(wide, "screenToWorld",
                         new Class<?>[]{double.class, double.class}, 300.0, 300.0);

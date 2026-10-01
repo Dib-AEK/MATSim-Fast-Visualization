@@ -1,8 +1,11 @@
 package com.matsim.viz.ui;
 
+import com.matsim.viz.config.AppDefaults;
 import com.matsim.viz.domain.ColorMode;
 import com.matsim.viz.ui.map.OsmBackground;
 import com.matsim.viz.domain.LinkSegment;
+import com.matsim.viz.domain.LinkPolyline;
+import com.matsim.viz.parser.DetailedNetworkGeometry;
 import com.matsim.viz.domain.NetworkData;
 import com.matsim.viz.domain.PtStopPoint;
 import com.matsim.viz.domain.VehicleShape;
@@ -63,33 +66,8 @@ public final class NetworkPanel extends JPanel {
         }
     }
 
-    private static final int PARALLEL_MIN_VISIBLE_LINKS = 200;
-    private static final int PARALLEL_MIN_ACTIVE_TRAVERSALS = 8_000;
-    private static final int MAX_SORTED_TRAVERSALS_PER_GROUP = 512;
-    private static final int VIEWPORT_WORLD_PADDING_PX = 48;
 
-    private static final double DEFAULT_CAR_LIKE_LENGTH_METERS = 7.0;
-    private static final double DEFAULT_BIKE_LENGTH_METERS = 3.0;
-    private static final double DEFAULT_TRUCK_LENGTH_METERS = 10.0;
-    private static final double DEFAULT_BUS_LENGTH_METERS = 12.0;
-    private static final double DEFAULT_RAIL_LENGTH_METERS = 30.0;
-    private static final double DEFAULT_CAR_WIDTH_RATIO = 0.70;
-    private static final double DEFAULT_BIKE_WIDTH_RATIO = 0.30;
-    private static final double DEFAULT_TRUCK_WIDTH_RATIO = 0.95;
-    private static final double DEFAULT_BUS_WIDTH_RATIO = 0.85;
-    private static final double DEFAULT_RAIL_WIDTH_RATIO = 0.90;
-    private static final double MIN_VEHICLE_LENGTH_METERS = 0.8;
 
-    private static final Color DEFAULT_BACKGROUND = new Color(0x111820);
-    private static final Color DEFAULT_ROAD = new Color(0x394550);
-    private static final Color LIGHT_BACKGROUND = new Color(0xECEFF4);
-    private static final Color LIGHT_ROAD = new Color(0xB0B8C8);
-    private static final Color QUEUE_LABEL = new Color(0xFF3D3D);
-    private static final Color BOTTLENECK_NORMAL = new Color(0x2E86FF);
-    private static final Color BOTTLENECK_CONGESTED = new Color(0xE03030);
-    private static final Color DEFAULT_HEATMAP_LOW = new Color(0xF7F7F7);
-    private static final Color DEFAULT_FLOW_HEATMAP_HIGH = new Color(0x7A0014);
-    private static final Color DEFAULT_SPEED_HEATMAP_HIGH = new Color(0x0C4A86);
     private static final HeatmapSnapshot EMPTY_HEATMAP_SNAPSHOT = new HeatmapSnapshot(Map.of(), 0.0, 0.0);
 
     private final SimulationModel model;
@@ -98,6 +76,14 @@ public final class NetworkPanel extends JPanel {
     private final SpatialGrid spatialGrid;
     private final Map<String, CarriagewayLayout.Slot> carriageways;
     private final List<RoadTaper.Join> roadJoins;
+    private DetailedNetworkGeometry detailedGeometry;
+    private boolean useDetailedGeometry;
+    private final Map<LinkScreenGeometry,LinkPolyline> screenCurves=new HashMap<>();
+    public void setDetailedGeometry(DetailedNetworkGeometry data){detailedGeometry=data;useDetailedGeometry=false;invalidateNetworkCache();repaint();}
+    public boolean hasDetailedGeometry(){return detailedGeometry!=null&&detailedGeometry.size()>0;}
+    public boolean isDetailedGeometryEnabled(){return useDetailedGeometry;}
+    public void setDetailedGeometryEnabled(boolean enabled){useDetailedGeometry=enabled&&hasDetailedGeometry();invalidateNetworkCache();repaint();}
+
     private final Map<LinkScreenGeometry, RoadTaper> roadTapers = new HashMap<>();
     private final double maxCarriagewayExtent;
     private final Set<String> selectedLinkModes = new HashSet<>();
@@ -107,52 +93,57 @@ public final class NetworkPanel extends JPanel {
     private final Set<String> visibleLinkIds = new HashSet<>();
     private final Map<String, LinkScreenGeometry> linkScreenGeometries = new HashMap<>();
 
-    private ColorMode colorMode = ColorMode.DEFAULT;
-    private boolean darkTheme = true;
-    private Color mapBackground = DEFAULT_BACKGROUND;
-    private Color mapRoad = DEFAULT_ROAD;
+    private ColorMode colorMode = ColorMode.valueOf(AppDefaults.Display.COLOR_MODE);
+    private boolean darkTheme = AppDefaults.Display.THEME_DARK;
+    private Color mapBackground = darkTheme ? AppDefaults.Network.DEFAULT_BACKGROUND : AppDefaults.Network.LIGHT_BACKGROUND;
+    private Color mapRoad = darkTheme ? AppDefaults.Network.DEFAULT_ROAD : AppDefaults.Network.LIGHT_ROAD;
     private OsmBackground osmBackground;
-    private boolean showQueues = false;
-    private boolean suppressOverlays = false;
-    private boolean showBottleneck;
-    private double bottleneckDivisor = 6.0;
-    private double bidirectionalOffset = 0.1;
-    private double laneWidthMeters = 3.5;
-    private double detailStartLanePixels = 0.3;
-    private double detailFullLanePixels = 1.5;
-    private double overviewVehicleCoverage = 0.75;
-    private double sampleSize = 1.0;
-    private double carLikeVehicleLengthMeters = DEFAULT_CAR_LIKE_LENGTH_METERS;
-    private double bikeVehicleLengthMeters = DEFAULT_BIKE_LENGTH_METERS;
-    private double truckVehicleLengthMeters = DEFAULT_TRUCK_LENGTH_METERS;
-    private double busVehicleLengthMeters = DEFAULT_BUS_LENGTH_METERS;
-    private double railVehicleLengthMeters = DEFAULT_RAIL_LENGTH_METERS;
-    private double carLikeVehicleWidthRatio = DEFAULT_CAR_WIDTH_RATIO;
-    private double bikeVehicleWidthRatio = DEFAULT_BIKE_WIDTH_RATIO;
-    private double truckVehicleWidthRatio = DEFAULT_TRUCK_WIDTH_RATIO;
-    private double busVehicleWidthRatio = DEFAULT_BUS_WIDTH_RATIO;
-    private double railVehicleWidthRatio = DEFAULT_RAIL_WIDTH_RATIO;
-    private VehicleShape carShape = VehicleShape.RECTANGLE;
-    private VehicleShape bikeShape = VehicleShape.DIAMOND;
-    private VehicleShape truckShape = VehicleShape.RECTANGLE;
-    private VehicleShape busShape = VehicleShape.OVAL;
-    private VehicleShape railShape = VehicleShape.ARROW;
-    private boolean keepVehiclesVisibleWhenZoomedOut = true;
-    private double minVehicleLengthPixels = 3.5;
-    private double minVehicleWidthPixels = 1.7;
-    private VisualizationMode visualizationMode = VisualizationMode.VEHICLES;
-    private int heatmapTimeBinSeconds = 600;
-    private Color flowHeatmapLowColor = DEFAULT_HEATMAP_LOW;
-    private Color flowHeatmapHighColor = DEFAULT_FLOW_HEATMAP_HIGH;
-    private Color speedHeatmapLowColor = DEFAULT_HEATMAP_LOW;
-    private Color speedHeatmapHighColor = DEFAULT_SPEED_HEATMAP_HIGH;
-    private Color speedRatioHeatmapLowColor = DEFAULT_HEATMAP_LOW;
-    private Color speedRatioHeatmapHighColor = new Color(0x0A5D2A);
-    private double ptStopBubbleMinRadiusPixels = 3.5;
-    private double ptStopBubbleMaxRadiusPixels = 24.0;
-    private boolean useSeparateHeatmapNetworkModes;
+    private boolean showQueues = AppDefaults.Display.SHOW_QUEUES;
+    private boolean suppressOverlays = AppDefaults.Display.SUPPRESS_OVERLAYS;
+    private boolean showBottleneck = AppDefaults.Display.SHOW_BOTTLENECK;
+    private double bottleneckDivisor = AppDefaults.Display.BOTTLENECK_DIVISOR;
+    private double bidirectionalOffset = AppDefaults.Display.BIDIRECTIONAL_OFFSET;
+    private double laneWidthMeters = AppDefaults.Display.LANE_WIDTH_M;
+    private double detailStartLanePixels = AppDefaults.Display.ZOOM_DETAIL_START_LANE_PX;
+    private double detailFullLanePixels = AppDefaults.Display.ZOOM_DETAIL_FULL_LANE_PX;
+    private double overviewVehicleCoverage = AppDefaults.Display.OVERVIEW_VEHICLE_COVERAGE;
+    private double sampleSize = AppDefaults.Display.SAMPLE_SIZE;
+    private double carLikeVehicleLengthMeters = AppDefaults.Vehicles.LENGTH_CAR_M;
+    private double bikeVehicleLengthMeters = AppDefaults.Vehicles.LENGTH_BIKE_M;
+    private double truckVehicleLengthMeters = AppDefaults.Vehicles.LENGTH_TRUCK_M;
+    private double busVehicleLengthMeters = AppDefaults.Vehicles.LENGTH_BUS_M;
+    private double railVehicleLengthMeters = AppDefaults.Vehicles.LENGTH_RAIL_M;
+    private double ferryVehicleLengthMeters = AppDefaults.Vehicles.LENGTH_FERRY_M;
+    private double ferryVehicleWidthRatio = AppDefaults.Vehicles.WIDTH_RATIO_FERRY;
+    private VehicleShape ferryShape = VehicleShape.valueOf(AppDefaults.Vehicles.SHAPE_FERRY);
+    private double carLikeVehicleWidthRatio = AppDefaults.Vehicles.WIDTH_RATIO_CAR;
+    private double bikeVehicleWidthRatio = AppDefaults.Vehicles.WIDTH_RATIO_BIKE;
+    private double truckVehicleWidthRatio = AppDefaults.Vehicles.WIDTH_RATIO_TRUCK;
+    private double busVehicleWidthRatio = AppDefaults.Vehicles.WIDTH_RATIO_BUS;
+    private double railVehicleWidthRatio = AppDefaults.Vehicles.WIDTH_RATIO_RAIL;
+    private VehicleShape carShape = VehicleShape.valueOf(AppDefaults.Vehicles.SHAPE_CAR);
+    private VehicleShape bikeShape = VehicleShape.valueOf(AppDefaults.Vehicles.SHAPE_BIKE);
+    private VehicleShape truckShape = VehicleShape.valueOf(AppDefaults.Vehicles.SHAPE_TRUCK);
+    private VehicleShape busShape = VehicleShape.valueOf(AppDefaults.Vehicles.SHAPE_BUS);
+    private VehicleShape railShape = VehicleShape.valueOf(AppDefaults.Vehicles.SHAPE_RAIL);
+    private boolean keepVehiclesVisibleWhenZoomedOut = AppDefaults.Display.KEEP_VEHICLES_VISIBLE_WHEN_ZOOMED_OUT;
+    private double minVehicleLengthPixels = AppDefaults.Display.MIN_VEHICLE_LENGTH_PX;
+    private double minVehicleWidthPixels = AppDefaults.Display.MIN_VEHICLE_WIDTH_PX;
+    private VisualizationMode visualizationMode = VisualizationMode.valueOf(AppDefaults.Display.VISUALIZATION_MODE);
+    private int heatmapTimeBinSeconds = AppDefaults.Heatmap.TIME_BIN_SECONDS;
+    private Color flowHeatmapLowColor = AppDefaults.Network.DEFAULT_HEATMAP_LOW;
+    private Color flowHeatmapHighColor = AppDefaults.Network.DEFAULT_FLOW_HEATMAP_HIGH;
+    private Color speedHeatmapLowColor = Color.decode(AppDefaults.Heatmap.SPEED_COLOR_LOW);
+    private Color speedHeatmapHighColor = AppDefaults.Network.DEFAULT_SPEED_HEATMAP_HIGH;
+    private Color speedRatioHeatmapLowColor = Color.decode(AppDefaults.Heatmap.SPEED_RATIO_COLOR_LOW);
+    private Color speedRatioHeatmapHighColor = Color.decode(AppDefaults.Heatmap.SPEED_RATIO_COLOR_HIGH);
+    private double ptStopBubbleMinRadiusPixels = AppDefaults.Display.PT_STOP_BUBBLE_MIN_RADIUS_PIXELS;
+    private double ptStopBubbleMaxRadiusPixels = AppDefaults.Display.PT_STOP_BUBBLE_MAX_RADIUS_PIXELS;
+    private boolean useSeparateHeatmapNetworkModes = AppDefaults.Heatmap.SEPARATE_NETWORK_MODES;
 
     private HeatmapCacheKey cachedHeatmapKey;
+    private double volumeMinWidthPixels = AppDefaults.Heatmap.VOLUME_MIN_WIDTH_PX;
+    private double volumeMaxWidthPixels = AppDefaults.Heatmap.VOLUME_MAX_WIDTH_PX;
     private HeatmapSnapshot cachedHeatmapSnapshot;
     private final Map<HeatmapCacheKey, HeatmapSnapshot> preprocessedHeatmapSnapshots = new HashMap<>();
     private HeatmapPreparedSignature preparedHeatmapSignature;
@@ -161,9 +152,9 @@ public final class NetworkPanel extends JPanel {
     private volatile double heatmapPreprocessProgress;
     private volatile boolean renderingSuspended;
 
-    private double zoom = 1.0;
-    private double panX = 20.0;
-    private double panY = 20.0;
+    private double zoom = AppDefaults.Camera.INITIAL_ZOOM;
+    private double panX = AppDefaults.Camera.INITIAL_PAN_PIXELS;
+    private double panY = AppDefaults.Camera.INITIAL_PAN_PIXELS;
     private double baseScale = 1.0;
     private boolean fitInitialized;
 
@@ -177,7 +168,7 @@ public final class NetworkPanel extends JPanel {
     private int cachedHeight = -1;
     private BufferedImage cachedRoadLayer;
     private int cacheMargin;
-    private float roadOpacity = 1f;
+    private float roadOpacity = AppDefaults.Display.ROAD_OPACITY;
     private boolean mapTilesDirty;
     private boolean recordingFrame;
     private boolean recordingActive;
@@ -201,11 +192,11 @@ public final class NetworkPanel extends JPanel {
             return Math.abs(slot.centerLanes()) + slot.gapSteps() * 0.5 + CarriagewayLayout.lanes(link) / 2.0;
         }).max().orElse(1);
         setBackground(mapBackground);
-        setPreferredSize(new Dimension(1200, 800));
-        selectedLinkModes.addAll(defaultTransportModes(model.availableLinkModes()));
-        selectedTripModes.addAll(defaultTransportModes(model.availableTripModes()));
-        selectedHeatmapTripModes.addAll(defaultTransportModes(model.availableTripModes()));
-        selectedPtStopModes.addAll(defaultTransportModes(model.availablePtStopModes()));
+        setPreferredSize(new Dimension(AppDefaults.Window.NETWORK_WIDTH, AppDefaults.Window.NETWORK_HEIGHT));
+        selectedLinkModes.addAll(model.defaultTransportModes(model.availableLinkModes()));
+        selectedTripModes.addAll(model.defaultTransportModes(model.availableTripModes()));
+        selectedHeatmapTripModes.addAll(model.defaultTransportModes(model.availableTripModes()));
+        selectedPtStopModes.addAll(model.defaultTransportModes(model.availablePtStopModes()));
 
         MouseAdapter mouseAdapter = new MouseAdapter() {
             @Override
@@ -276,7 +267,7 @@ public final class NetworkPanel extends JPanel {
     }
 
     public void setVisualizationMode(VisualizationMode mode) {
-        this.visualizationMode = mode == null ? VisualizationMode.VEHICLES : mode;
+        this.visualizationMode = mode == null ? VisualizationMode.valueOf(AppDefaults.Display.VISUALIZATION_MODE) : mode;
         invalidateNetworkCache();
         invalidateHeatmapCache();
         repaint();
@@ -306,6 +297,22 @@ public final class NetworkPanel extends JPanel {
         return model.availablePtStopModes();
     }
 
+    public double getVolumeMinWidthPixels() { return volumeMinWidthPixels; }
+    public double getVolumeMaxWidthPixels() { return volumeMaxWidthPixels; }
+    public void setVolumeWidthPixels(double min, double max) {
+        if (!Double.isFinite(min) || !Double.isFinite(max) || min < AppDefaults.Heatmap.VOLUME_WIDTH_CONTROL_MIN_PX
+                || max > AppDefaults.Heatmap.VOLUME_WIDTH_CONTROL_MAX_PX || min > max) {
+            throw new IllegalArgumentException("Volume width requires finite minimum <= maximum within the control range");
+        }
+        volumeMinWidthPixels = min; volumeMaxWidthPixels = max; repaint();
+    }
+    private boolean isVolumeHeatmap() {
+        return visualizationMode == VisualizationMode.FLOW_HEATMAP || visualizationMode == VisualizationMode.PT_FLOW_HEATMAP;
+    }
+    private double volumeWidthPixels(double intensity) {
+        return volumeMinWidthPixels + (volumeMaxWidthPixels-volumeMinWidthPixels)*Math.max(0,Math.min(1,intensity));
+    }
+
     public int getHeatmapTimeBinSeconds() {
         return heatmapTimeBinSeconds;
     }
@@ -321,7 +328,7 @@ public final class NetworkPanel extends JPanel {
     }
 
     public void setFlowHeatmapLowColor(Color color) {
-        this.flowHeatmapLowColor = color == null ? DEFAULT_HEATMAP_LOW : color;
+        this.flowHeatmapLowColor = color == null ? AppDefaults.Network.DEFAULT_HEATMAP_LOW : color;
         repaint();
     }
 
@@ -330,7 +337,7 @@ public final class NetworkPanel extends JPanel {
     }
 
     public void setFlowHeatmapHighColor(Color color) {
-        this.flowHeatmapHighColor = color == null ? DEFAULT_FLOW_HEATMAP_HIGH : color;
+        this.flowHeatmapHighColor = color == null ? AppDefaults.Network.DEFAULT_FLOW_HEATMAP_HIGH : color;
         repaint();
     }
 
@@ -339,7 +346,7 @@ public final class NetworkPanel extends JPanel {
     }
 
     public void setSpeedHeatmapLowColor(Color color) {
-        this.speedHeatmapLowColor = color == null ? DEFAULT_HEATMAP_LOW : color;
+        this.speedHeatmapLowColor = color == null ? Color.decode(AppDefaults.Heatmap.SPEED_COLOR_LOW) : color;
         repaint();
     }
 
@@ -348,7 +355,7 @@ public final class NetworkPanel extends JPanel {
     }
 
     public void setSpeedHeatmapHighColor(Color color) {
-        this.speedHeatmapHighColor = color == null ? DEFAULT_SPEED_HEATMAP_HIGH : color;
+        this.speedHeatmapHighColor = color == null ? AppDefaults.Network.DEFAULT_SPEED_HEATMAP_HIGH : color;
         repaint();
     }
 
@@ -357,7 +364,7 @@ public final class NetworkPanel extends JPanel {
     }
 
     public void setSpeedRatioHeatmapLowColor(Color color) {
-        this.speedRatioHeatmapLowColor = color == null ? DEFAULT_HEATMAP_LOW : color;
+        this.speedRatioHeatmapLowColor = color == null ? Color.decode(AppDefaults.Heatmap.SPEED_RATIO_COLOR_LOW) : color;
         repaint();
     }
 
@@ -366,7 +373,7 @@ public final class NetworkPanel extends JPanel {
     }
 
     public void setSpeedRatioHeatmapHighColor(Color color) {
-        this.speedRatioHeatmapHighColor = color == null ? new Color(0x0A5D2A) : color;
+        this.speedRatioHeatmapHighColor = color == null ? Color.decode(AppDefaults.Heatmap.SPEED_RATIO_COLOR_HIGH) : color;
         repaint();
     }
 
@@ -667,8 +674,8 @@ public final class NetworkPanel extends JPanel {
 
     public void setDarkTheme(boolean dark) {
         this.darkTheme = dark;
-        this.mapBackground = dark ? DEFAULT_BACKGROUND : LIGHT_BACKGROUND;
-        this.mapRoad = dark ? DEFAULT_ROAD : LIGHT_ROAD;
+        this.mapBackground = dark ? AppDefaults.Network.DEFAULT_BACKGROUND : AppDefaults.Network.LIGHT_BACKGROUND;
+        this.mapRoad = dark ? AppDefaults.Network.DEFAULT_ROAD : AppDefaults.Network.LIGHT_ROAD;
         setBackground(mapBackground);
         invalidateNetworkCache();
         repaint();
@@ -856,6 +863,17 @@ public final class NetworkPanel extends JPanel {
         return railVehicleLengthMeters;
     }
 
+    public double getFerryVehicleWidthRatio() { return ferryVehicleWidthRatio; }
+    public void setFerryVehicleWidthRatio(double ratio) { ferryVehicleWidthRatio = clampWidthRatio(ratio); repaint(); }
+    public VehicleShape getFerryShape() { return ferryShape; }
+    public void setFerryShape(VehicleShape shape) { ferryShape = shape; repaint(); }
+    public double getFerryVehicleLengthMeters() { return ferryVehicleLengthMeters; }
+    public void setFerryVehicleLengthMeters(double value) {
+        if (!Double.isFinite(value)) throw new IllegalArgumentException("Ferry length must be finite");
+        ferryVehicleLengthMeters = Math.max(5.0, value);
+        repaint();
+    }
+
     public void setRailVehicleWidthRatio(double ratio) {
         this.railVehicleWidthRatio = clampWidthRatio(ratio);
         repaint();
@@ -896,6 +914,7 @@ public final class NetworkPanel extends JPanel {
         if (renderingSuspended) {
             linkScreenGeometries.clear();
             roadTapers.clear();
+        screenCurves.clear();
             visibleLinkIds.clear();
         }
         repaint();
@@ -976,7 +995,7 @@ public final class NetworkPanel extends JPanel {
             worldGraphics.drawImage(cachedNetworkLayer, -cacheMargin, -cacheMargin,
                     cachedWidth + 2 * cacheMargin, cachedHeight + 2 * cacheMargin, null);
             worldGraphics.setComposite(AlphaComposite.SrcOver.derive(roadOpacity));
-            worldGraphics.drawImage(cachedRoadLayer, -cacheMargin, -cacheMargin,
+            if (!isVolumeHeatmap()) worldGraphics.drawImage(cachedRoadLayer, -cacheMargin, -cacheMargin,
                     cachedWidth + 2 * cacheMargin, cachedHeight + 2 * cacheMargin, null);
             worldGraphics.setComposite(AlphaComposite.SrcOver);
             if (vehicleMode) {
@@ -1022,9 +1041,9 @@ public final class NetworkPanel extends JPanel {
         int x = (getWidth() - boxWidth) / 2;
         int y = (getHeight() - boxHeight) / 2;
 
-        g2.setColor(darkTheme ? new Color(0x121212) : new Color(0xF2F2F2));
+        g2.setColor(darkTheme ? AppDefaults.Colors.PROGRESS_DARK_BACKGROUND : AppDefaults.Colors.PROGRESS_LIGHT_BACKGROUND);
         g2.fillRoundRect(x, y, boxWidth, boxHeight, 14, 14);
-        g2.setColor(darkTheme ? new Color(0x6A6A6A) : new Color(0xA0A0A0));
+        g2.setColor(darkTheme ? AppDefaults.Colors.DARK_DIALOG_BORDER : AppDefaults.Colors.LIGHT_DIALOG_BORDER);
         g2.drawRoundRect(x, y, boxWidth, boxHeight, 14, 14);
 
         int spinnerSize = 26;
@@ -1033,26 +1052,26 @@ public final class NetworkPanel extends JPanel {
         int angle = (int) ((System.nanoTime() / 7_000_000L) % 360);
 
         g2.setStroke(new BasicStroke(3.0f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
-        g2.setColor(darkTheme ? new Color(0xB5B5B5) : new Color(0x777777));
+        g2.setColor(darkTheme ? AppDefaults.Colors.DARK_SPINNER : AppDefaults.Colors.MUTED_GRAY);
         g2.drawOval(spinnerX, spinnerY, spinnerSize, spinnerSize);
-        g2.setColor(darkTheme ? new Color(0xFFFFFF) : new Color(0x2A2A2A));
+        g2.setColor(darkTheme ? AppDefaults.Colors.WHITE : AppDefaults.Colors.LIGHT_DIALOG_TITLE);
         g2.drawArc(spinnerX, spinnerY, spinnerSize, spinnerSize, angle, 110);
 
-        g2.setColor(darkTheme ? new Color(0xECECEC) : new Color(0x1A1A1A));
+        g2.setColor(darkTheme ? AppDefaults.Colors.DARK_DIALOG_TEXT : AppDefaults.Colors.LIGHT_DIALOG_TEXT);
         g2.drawString("Preprocessing heatmaps...", x + 56, y + 40);
 
         int progressBarX = x + 18;
         int progressBarY = y + 62;
         int progressBarW = boxWidth - 36;
         int progressBarH = 14;
-        g2.setColor(darkTheme ? new Color(0x2F2F2F) : new Color(0xD6D6D6));
+        g2.setColor(darkTheme ? AppDefaults.Colors.DARK_PROGRESS_TRACK : AppDefaults.Colors.LIGHT_PROGRESS_TRACK);
         g2.fillRoundRect(progressBarX, progressBarY, progressBarW, progressBarH, 8, 8);
 
         int filled = (int) Math.round(progressBarW * Math.max(0.0, Math.min(1.0, heatmapPreprocessProgress)));
-        g2.setColor(darkTheme ? new Color(0x5DA9FF) : new Color(0x306FBA));
+        g2.setColor(darkTheme ? AppDefaults.Colors.DARK_PROGRESS_FILL : AppDefaults.Colors.LIGHT_PROGRESS_FILL);
         g2.fillRoundRect(progressBarX, progressBarY, filled, progressBarH, 8, 8);
 
-        g2.setColor(darkTheme ? new Color(0xDFDFDF) : new Color(0x262626));
+        g2.setColor(darkTheme ? AppDefaults.Colors.DARK_SECONDARY_TEXT : AppDefaults.Colors.LIGHT_SECONDARY_TEXT);
         g2.drawString((int) Math.round(heatmapPreprocessProgress * 100) + "%", x + boxWidth - 44, y + 92);
     }
 
@@ -1065,12 +1084,12 @@ public final class NetworkPanel extends JPanel {
         int x = (getWidth() - boxWidth) / 2;
         int y = (getHeight() - boxHeight) / 2;
 
-        g2.setColor(darkTheme ? new Color(0x151515) : new Color(0xF3F3F3));
+        g2.setColor(darkTheme ? AppDefaults.Colors.BUSY_DARK_BACKGROUND : AppDefaults.Colors.BUSY_LIGHT_BACKGROUND);
         g2.fillRoundRect(x, y, boxWidth, boxHeight, 14, 14);
-        g2.setColor(darkTheme ? new Color(0x6A6A6A) : new Color(0xA0A0A0));
+        g2.setColor(darkTheme ? AppDefaults.Colors.DARK_DIALOG_BORDER : AppDefaults.Colors.LIGHT_DIALOG_BORDER);
         g2.drawRoundRect(x, y, boxWidth, boxHeight, 14, 14);
 
-        g2.setColor(darkTheme ? new Color(0xEFEFEF) : new Color(0x1A1A1A));
+        g2.setColor(darkTheme ? AppDefaults.Colors.DARK_OVERLAY_TEXT : AppDefaults.Colors.LIGHT_DIALOG_TEXT);
         g2.drawString("Heatmap settings changed.", x + 18, y + 30);
         g2.drawString("Click Apply Bin + Preprocess to update.", x + 18, y + 50);
     }
@@ -1088,15 +1107,43 @@ public final class NetworkPanel extends JPanel {
         double sy = (getHeight() - 40.0) / height;
         baseScale = Math.max(0.000001, Math.min(sx, sy));
 
-        zoom = 1.0;
-        panX = 20.0;
-        panY = 20.0;
+        zoom = AppDefaults.Camera.INITIAL_ZOOM;
+        panX = AppDefaults.Camera.INITIAL_PAN_PIXELS;
+        panY = AppDefaults.Camera.INITIAL_PAN_PIXELS;
         fitInitialized = true;
         invalidateNetworkCache();
     }
 
+    // Tile arrivals change only the background, not road geometry, visibility, or vehicle placement.
+    private void refreshMapLayer() {
+        mapTilesDirty = false;
+        int layerWidth = cachedWidth + 2 * cacheMargin;
+        int layerHeight = cachedHeight + 2 * cacheMargin;
+        Graphics2D g2 = cachedNetworkLayer.createGraphics();
+        g2.scale(cachedRasterScale, cachedRasterScale);
+        g2.setColor(mapBackground);
+        g2.fillRect(0, 0, layerWidth, layerHeight);
+        g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+        g2.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_SPEED);
+
+        if (osmBackground != null) {
+            osmBackground.draw(g2, layerWidth, layerHeight,
+                    (x, y) -> screenToWorld(x - cacheMargin + panX - cachedPanX,
+                            y - cacheMargin + cachedPanY - panY),
+                    (x, y) -> {
+                        Point2D.Double point = worldToScreen(x, y);
+                        return new Point2D.Double(point.x + cacheMargin - (panX - cachedPanX),
+                                point.y + cacheMargin - (cachedPanY - panY));
+                    }, () -> {
+                        mapTilesDirty = true;
+                        repaint();
+                    });
+        }
+        g2.dispose();
+    }
+
     private void renderNetworkLayerIfNeeded() {
-        int desiredMargin = recordingFrame || recordingActive ? 0 : Math.min(384, Math.max(128, Math.min(getWidth(), getHeight()) / 2));
+        int desiredMargin = recordingFrame || recordingActive ? 0 : Math.min(AppDefaults.Network.MAX_CACHE_MARGIN_PX, Math.max(AppDefaults.Network.MIN_CACHE_MARGIN_PX, Math.min(getWidth(), getHeight()) / 2));
         if (cachedNetworkLayer != null
                 && cacheMargin == desiredMargin
                 && (cachedRasterScale == networkRasterScale || (recordingActive && cachedRasterScale >= networkRasterScale))
@@ -1105,8 +1152,10 @@ public final class NetworkPanel extends JPanel {
                 && cachedHeight == getHeight()) {
             double panDriftX = Math.abs(panX - cachedPanX);
             double panDriftY = Math.abs(panY - cachedPanY);
-            if (panDriftX <= cacheMargin && panDriftY <= cacheMargin
-                    && (!mapTilesDirty || (dragStart != null && !recordingFrame))) return;
+            if (panDriftX <= cacheMargin && panDriftY <= cacheMargin) {
+                if (mapTilesDirty && (dragStart == null || recordingFrame)) refreshMapLayer();
+                return;
+            }
         }
         cacheMargin = desiredMargin;
         mapTilesDirty = false;
@@ -1123,25 +1172,8 @@ public final class NetworkPanel extends JPanel {
         int rasterWidth = Math.max(1, (int) Math.ceil(layerWidth * networkRasterScale));
         int rasterHeight = Math.max(1, (int) Math.ceil(layerHeight * networkRasterScale));
         cachedNetworkLayer = createCompatibleImage(rasterWidth, rasterHeight);
-        Graphics2D g2 = cachedNetworkLayer.createGraphics();
-        g2.scale(networkRasterScale, networkRasterScale);
-        g2.setColor(mapBackground);
-        g2.fillRect(0, 0, layerWidth, layerHeight);
-        g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-        g2.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_SPEED);
-
-        if (osmBackground != null) {
-            osmBackground.draw(g2, layerWidth, layerHeight,
-                    (x, y) -> screenToWorld(x - cacheMargin, y - cacheMargin),
-                    (x, y) -> {
-                        Point2D.Double point = worldToScreen(x, y);
-                        return new Point2D.Double(point.x + cacheMargin, point.y + cacheMargin);
-                    }, () -> {
-                        mapTilesDirty = true;
-                        repaint();
-                    });
-        }
-        g2.dispose();
+        refreshMapLayer();
+        Graphics2D g2;
         cachedRoadLayer = new BufferedImage(rasterWidth, rasterHeight, BufferedImage.TYPE_INT_ARGB_PRE);
         g2 = cachedRoadLayer.createGraphics();
         g2.scale(networkRasterScale, networkRasterScale);
@@ -1151,6 +1183,7 @@ public final class NetworkPanel extends JPanel {
 
         linkScreenGeometries.clear();
         roadTapers.clear();
+        screenCurves.clear();
         visibleLinkIds.clear();
         queryVisibleLinks(visibleLinkIds);
 
@@ -1172,9 +1205,8 @@ public final class NetworkPanel extends JPanel {
             double dx = b.x - a.x;
             double dy = b.y - a.y;
             double length = Math.hypot(dx, dy);
-            if (length < minScreenLength) {
-                continue;
-            }
+            if (length < minScreenLength && !(useDetailedGeometry && detailedGeometry.get(link.id())!=null)) continue;
+            length=Math.max(1e-9,length);
 
             int laneCount = laneCount(link);
             double nx = -dy / length;
@@ -1185,7 +1217,18 @@ public final class NetworkPanel extends JPanel {
             double shift = networkDetail() * carriageways.get(link.id()).offset(laneWidth, laneWidth * bidirectionalOffset * 0.5);
             a.x += nx * shift;
             a.y += ny * shift;
-            linkScreenGeometries.put(link.id(), new LinkScreenGeometry(a.x, a.y, dx, dy, length, nx, ny, laneWidth, laneCount, angle));
+            LinkPolyline curve=null;
+            if(useDetailedGeometry){
+                var world=detailedGeometry.get(link.id());
+                if(world!=null){
+                    double[] points=new double[world.size()*2];
+                    for(int i=0;i<world.size();i++){var point=worldToScreen(world.x(i),world.y(i));points[2*i]=point.x;points[2*i+1]=point.y;}
+                    curve=new LinkPolyline(points).offset(shift);length=curve.length();
+                }
+            }
+            var screen=new LinkScreenGeometry(a.x, a.y, dx, dy, length, nx, ny, laneWidth, laneCount, angle);
+            linkScreenGeometries.put(link.id(),screen);
+            if(curve!=null)screenCurves.put(screen,curve);
         }
 
         double detail = networkDetail();
@@ -1217,9 +1260,11 @@ public final class NetworkPanel extends JPanel {
             if (a == null || b == null) continue;
             LinkSegment link = model.networkData().getLinks().get(join.incoming());
             Point2D.Double node = worldToScreen(link.toX(), link.toY());
-            double dot = a.nx() * b.nx() + a.ny() * b.ny();
-            double mx = (a.nx() + b.nx()) / (1 + dot);
-            double my = (a.ny() + b.ny()) / (1 + dot);
+            double aa=screenCurves.containsKey(a)?screenCurves.get(a).at(1,0).angle():a.angle();
+            double ba=screenCurves.containsKey(b)?screenCurves.get(b).at(0,0).angle():b.angle();
+            double anx=-Math.sin(aa),any=Math.cos(aa),bnx=-Math.sin(ba),bny=Math.cos(ba);
+            double dot=anx*bnx+any*bny;if(dot<0.5)continue;
+            double mx=(anx+bnx)/(1+dot),my=(any+bny)/(1+dot);
             boolean useA = a.laneCount() < b.laneCount();
             LinkScreenGeometry narrow = useA ? a : b;
             double shift = networkDetail() * carriageways.get(useA ? join.incoming() : join.outgoing())
@@ -1234,13 +1279,14 @@ public final class NetworkPanel extends JPanel {
     }
 
     private RoadTaper createTaper(LinkScreenGeometry road, double reach) {
+        if(screenCurves.containsKey(road))return new RoadTaper(screenCurves.get(road),roadWidthPixels(road),reach);
         return new RoadTaper(road.fromX(), road.fromY(), road.dx(), road.dy(), road.nx(), road.ny(),
                 roadWidthPixels(road), reach);
     }
 
     private void drawRoadSurface(Graphics2D g2, LinkScreenGeometry road, boolean outline) {
         double width = roadWidthPixels(road);
-        g2.setColor(outline ? interpolateColor(mapRoad, darkTheme ? new Color(0x65717B) : new Color(0x8995A2), networkDetail()) : mapRoad);
+        g2.setColor(outline ? interpolateColor(mapRoad, darkTheme ? AppDefaults.Colors.DARK_ROAD_OUTLINE : AppDefaults.Colors.LIGHT_ROAD_OUTLINE, networkDetail()) : mapRoad);
         RoadTaper taper = roadTapers.get(road);
         if (taper != null) {
             var surface = taper.surface();
@@ -1253,7 +1299,9 @@ public final class NetworkPanel extends JPanel {
         }
         g2.setStroke(new BasicStroke((float) (width + (outline ? 0.8 * networkDetail() : 0)),
                 BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
-        g2.draw(new Line2D.Double(road.fromX(), road.fromY(), road.fromX() + road.dx(), road.fromY() + road.dy()));
+        var curve=screenCurves.get(road);
+        if(curve!=null)g2.draw(curve.path(0,0,1));
+        else g2.draw(new Line2D.Double(road.fromX(), road.fromY(), road.fromX() + road.dx(), road.fromY() + road.dy()));
     }
 
     private void drawRoadMarkings(Graphics2D g2, LinkScreenGeometry road) {
@@ -1268,7 +1316,9 @@ public final class NetworkPanel extends JPanel {
             double x = road.fromX() + road.nx() * offset;
             double y = road.fromY() + road.ny() * offset;
             RoadTaper taper = roadTapers.get(road);
-            if (taper == null) {
+            if (taper == null && screenCurves.containsKey(road)) {
+                g2.draw(screenCurves.get(road).path(offset,trim/road.length(),1-trim/road.length()));
+            } else if (taper == null) {
                 g2.draw(new Line2D.Double(x + ux * trim, y + uy * trim,
                         x + road.dx() - ux * trim, y + road.dy() - uy * trim));
             } else {
@@ -1288,6 +1338,9 @@ public final class NetworkPanel extends JPanel {
             double offset = (lane + 0.5 - road.laneCount() / 2.0) * road.laneWidth();
             double x = road.fromX() + road.dx() * 0.62 + road.nx() * offset;
             double y = road.fromY() + road.dy() * 0.62 + road.ny() * offset;
+            if(screenCurves.containsKey(road)){
+                var point=screenCurves.get(road).at(0.62,offset);x=point.x();y=point.y();ux=Math.cos(point.angle());uy=Math.sin(point.angle());
+            }
             RoadTaper taper = roadTapers.get(road);
             if (taper != null) {
                 var point = taper.section(0.62).point((lane + 0.5) / road.laneCount() - 0.5);
@@ -1296,8 +1349,8 @@ public final class NetworkPanel extends JPanel {
             }
             g2.draw(new Line2D.Double(x - ux * size, y - uy * size, x + ux * size, y + uy * size));
             for (int side : new int[]{-1, 1}) {
-                g2.draw(new Line2D.Double(x + road.nx() * size * 0.55 * side,
-                        y + road.ny() * size * 0.55 * side, x + ux * size, y + uy * size));
+                g2.draw(new Line2D.Double(x - uy * size * 0.55 * side,
+                        y + ux * size * 0.55 * side, x + ux * size, y + uy * size));
             }
         }
     }
@@ -1322,8 +1375,8 @@ public final class NetworkPanel extends JPanel {
         }
 
         boolean canParallelize = Runtime.getRuntime().availableProcessors() > 1
-                && linkState.size() >= PARALLEL_MIN_VISIBLE_LINKS
-                && totalTraversals >= PARALLEL_MIN_ACTIVE_TRAVERSALS;
+                && linkState.size() >= AppDefaults.Network.PARALLEL_MIN_VISIBLE_LINKS
+                && totalTraversals >= AppDefaults.Network.PARALLEL_MIN_ACTIVE_TRAVERSALS;
 
         Stream<Map.Entry<String, PlaybackController.LinkFrameSnapshot>> stateStream = linkState.entrySet().stream();
         if (canParallelize) {
@@ -1388,6 +1441,10 @@ public final class NetworkPanel extends JPanel {
                     prepared.linkIsBottleneck()
             );
 
+            drawModeGroup(g2, prepared.geometry(), prepared.link(), prepared.ferryTraversals(),
+                    currentTime, ferryVehicleLengthMeters, ferryVehicleWidthRatio, ferryShape,
+                    true, prepared.linkIsBottleneck());
+
             drawModeGroup(
                     g2,
                     prepared.geometry(),
@@ -1410,6 +1467,9 @@ public final class NetworkPanel extends JPanel {
         double time = playbackController.getCurrentTime();
         for (var entry : states.entrySet()) {
             LinkSegment link = model.networkData().getLinks().get(entry.getKey());
+            var geometry=linkScreenGeometries.get(entry.getKey());
+            var curve=screenCurves.get(geometry);
+            if(curve!=null){drawCurvedOverviewVehicles(graphics,curve,entry.getValue(),time,opacity);continue;}
             OverviewEdge edge = OverviewEdge.of(link);
             boolean forward = link.fromX() == edge.x1() && link.fromY() == edge.y1();
             boolean congested = entry.getValue().queueCount()
@@ -1423,7 +1483,7 @@ public final class NetworkPanel extends JPanel {
         }
         Graphics2D g = (Graphics2D) graphics.create();
         g.setComposite(AlphaComposite.SrcOver.derive((float) opacity));
-        g.setStroke(new BasicStroke(1.5f, BasicStroke.CAP_BUTT, BasicStroke.JOIN_ROUND));
+        g.setStroke(new BasicStroke((float) (keepVehiclesVisibleWhenZoomedOut ? minVehicleWidthPixels : 1.5), BasicStroke.CAP_BUTT, BasicStroke.JOIN_ROUND));
         for (var entry : groups.entrySet()) {
             OverviewEdge edge = entry.getKey();
             Point2D.Double a = worldToScreen(edge.x1(), edge.y1());
@@ -1436,17 +1496,41 @@ public final class NetworkPanel extends JPanel {
             List<OverviewVehicle> vehicles = entry.getValue();
             vehicles.sort(java.util.Comparator.comparingDouble(OverviewVehicle::progress));
             double[] progress = vehicles.stream().mapToDouble(OverviewVehicle::progress).toArray();
-            for (OverviewVehicleLayout.Mark mark : OverviewVehicleLayout.arrange(progress, length, overviewVehicleCoverage)) {
+            for (OverviewVehicleLayout.Mark mark : OverviewVehicleLayout.arrange(progress, length, overviewVehicleCoverage,
+                    vehicles.stream().mapToDouble(v -> overviewVehicleLength(v.index(), length)).toArray())) {
                 OverviewVehicle vehicle = vehicles.get(mark.vehicleIndex());
-                Color color = showBottleneck ? (vehicle.congested() ? BOTTLENECK_CONGESTED : BOTTLENECK_NORMAL)
+                Color color = showBottleneck ? (vehicle.congested() ? AppDefaults.Network.BOTTLENECK_CONGESTED : AppDefaults.Network.BOTTLENECK_NORMAL)
                         : colorMode == ColorMode.DEFAULT ? colorProvider.colorForTripMode(model.traversalTripMode(vehicle.index()))
                         : colorProvider.colorFor(vehicle.index(), model, colorMode);
                 g.setColor(color);
-                g.draw(new Line2D.Double(a.x + (b.x - a.x) * mark.start() / length,
-                        a.y + (b.y - a.y) * mark.start() / length,
-                        a.x + (b.x - a.x) * mark.end() / length,
-                        a.y + (b.y - a.y) * mark.end() / length));
+                double center = (mark.start() + mark.end()) / (2 * length);
+                var geometry = linkScreenGeometries.get(model.traversalLinkId(vehicle.index()));
+                drawOverviewMark(g, vehicle.index(), time,
+                        new VehiclePose(a.x + (b.x-a.x)*center, a.y + (b.y-a.y)*center,
+                                geometry.angle(), 1), mark.end()-mark.start());
             }
+        }
+        g.dispose();
+    }
+
+    private void drawCurvedOverviewVehicles(Graphics2D graphics,LinkPolyline curve,PlaybackController.LinkFrameSnapshot state,double time,double opacity){
+        List<Integer> indexes=new ArrayList<>();
+        for(int i:state.traversalIndexes())if(shouldRenderTripMode(model.traversalTripMode(i)))indexes.add(i);
+        indexes.sort(java.util.Comparator.comparingDouble(i->naturalProgress(i,time)));
+        double[] progress=indexes.stream().mapToDouble(i->naturalProgress(i,time)).toArray();
+        Graphics2D g=(Graphics2D)graphics.create();
+        g.setComposite(AlphaComposite.SrcOver.derive((float)opacity));g.setStroke(new BasicStroke((float)(keepVehiclesVisibleWhenZoomedOut ? minVehicleWidthPixels : 1.5), BasicStroke.CAP_BUTT, BasicStroke.JOIN_ROUND));
+        for(var mark:OverviewVehicleLayout.arrange(progress,curve.length(),overviewVehicleCoverage,
+                indexes.stream().mapToDouble(i -> overviewVehicleLength(i, curve.length())).toArray())){
+            int i=indexes.get(mark.vehicleIndex());
+            LinkSegment link=model.networkData().getLinks().get(model.traversalLinkId(i));
+            boolean congested=state.queueCount()>sampleSize*laneCount(link)*link.length()/bottleneckDivisor;
+            g.setColor(showBottleneck?(congested?AppDefaults.Network.BOTTLENECK_CONGESTED:AppDefaults.Network.BOTTLENECK_NORMAL):colorMode==ColorMode.DEFAULT?colorProvider.colorForTripMode(model.traversalTripMode(i)):colorProvider.colorFor(i,model,colorMode));
+            var point = curve.at((mark.start()+mark.end())/(2*curve.length()), 0);
+            var pose = new VehiclePose(point.x(), point.y(), point.angle(), 1);
+            var smooth = smoothVehiclePose(i, time, pose);
+            if (smooth == pose) g.draw(curve.path(0,mark.start()/curve.length(),mark.end()/curve.length()));
+            else drawOverviewMark(g, i, time, pose, mark.end()-mark.start());
         }
         g.dispose();
     }
@@ -1487,7 +1571,7 @@ public final class NetworkPanel extends JPanel {
             double valueA = interpolation.currentBinSnapshot().values().getOrDefault(linkId, 0.0);
             double valueB = interpolation.nextBinSnapshot().values().getOrDefault(linkId, 0.0);
             double normalized = interpolateHeatmapIntensity(valueA, valueB, maxValue, interpolation.alpha());
-            if (networkDetail() == 0) {
+            if (networkDetail() == 0 && !screenCurves.containsKey(geometry)) {
                 boolean slowest = visualizationMode == VisualizationMode.SPEED_HEATMAP
                         || visualizationMode == VisualizationMode.SPEED_RATIO_HEATMAP;
                 overview.merge(OverviewEdge.of(link), new OverviewHeatmap(geometry,
@@ -1497,11 +1581,12 @@ public final class NetworkPanel extends JPanel {
                                 aggregateHeatmapIntensity(left.nextValue(), right.nextValue(), slowest)));
                 continue;
             }
-            float roadWidth = (float) roadWidthPixels(geometry);
+            float roadWidth = (float) (isVolumeHeatmap() ? volumeWidthPixels(normalized) : roadWidthPixels(geometry));
             g2.setStroke(new BasicStroke(roadWidth, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
             g2.setColor(interpolateColor(lowColor, highColor, normalized));
             RoadTaper taper = roadTapers.get(geometry);
-            if (taper != null) g2.fill(taper.surface());
+            if (taper != null && !isVolumeHeatmap()) g2.fill(taper.surface());
+            else if(screenCurves.containsKey(geometry))g2.draw(screenCurves.get(geometry).path(0,0,1));
             else g2.drawLine(
                     (int) Math.round(geometry.fromX()),
                     (int) Math.round(geometry.fromY()),
@@ -1512,9 +1597,9 @@ public final class NetworkPanel extends JPanel {
         // Collapsed directions show the highest flow or lowest measured speed, independent of draw order.
         for (OverviewHeatmap aggregate : overview.values()) {
             LinkScreenGeometry geometry = aggregate.geometry();
-            g2.setStroke(new BasicStroke(0.9f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
-            g2.setColor(interpolateColor(lowColor, highColor,
-                    aggregate.value() + (aggregate.nextValue() - aggregate.value()) * interpolation.alpha()));
+            double intensity = aggregate.value() + (aggregate.nextValue() - aggregate.value()) * interpolation.alpha();
+            g2.setStroke(new BasicStroke((float) (isVolumeHeatmap() ? volumeWidthPixels(intensity) : 0.9), BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+            g2.setColor(interpolateColor(lowColor, highColor, intensity));
             g2.draw(new Line2D.Double(geometry.fromX(), geometry.fromY(),
                     geometry.fromX() + geometry.dx(), geometry.fromY() + geometry.dy()));
         }
@@ -1807,7 +1892,7 @@ public final class NetworkPanel extends JPanel {
             case FLOW_HEATMAP, PT_FLOW_HEATMAP, PT_STOP_BUBBLES -> flowHeatmapLowColor;
             case SPEED_HEATMAP -> speedHeatmapLowColor;
             case SPEED_RATIO_HEATMAP -> speedRatioHeatmapLowColor;
-            case VEHICLES -> DEFAULT_HEATMAP_LOW;
+            case VEHICLES -> AppDefaults.Network.DEFAULT_HEATMAP_LOW;
         };
     }
 
@@ -1816,7 +1901,7 @@ public final class NetworkPanel extends JPanel {
             case FLOW_HEATMAP, PT_FLOW_HEATMAP, PT_STOP_BUBBLES -> flowHeatmapHighColor;
             case SPEED_HEATMAP -> speedHeatmapHighColor;
             case SPEED_RATIO_HEATMAP -> speedRatioHeatmapHighColor;
-            case VEHICLES -> DEFAULT_FLOW_HEATMAP_HIGH;
+            case VEHICLES -> AppDefaults.Network.DEFAULT_FLOW_HEATMAP_HIGH;
         };
     }
 
@@ -1863,7 +1948,7 @@ public final class NetworkPanel extends JPanel {
         if (queueConstrained) {
             vehicleLengthMeters = Math.min(baseLengthMeters, linkLengthMeters / Math.max(1, traversals.size()));
         }
-        vehicleLengthMeters = Math.max(MIN_VEHICLE_LENGTH_METERS, vehicleLengthMeters);
+        vehicleLengthMeters = Math.max(AppDefaults.Network.MIN_VEHICLE_LENGTH_METERS, vehicleLengthMeters);
 
         double minCenterMeters = vehicleLengthMeters * 0.5;
         double maxCenterMeters = Math.max(minCenterMeters, linkLengthMeters - vehicleLengthMeters * 0.5);
@@ -1890,33 +1975,14 @@ public final class NetworkPanel extends JPanel {
 
             double progress = centerMeters / linkLengthMeters;
 
-            double sx = geometry.fromX() + geometry.dx() * progress;
-            double sy = geometry.fromY() + geometry.dy() * progress;
-
-            double laneCenterOffset = ((laneIndex + 0.5) - laneCount / 2.0) * geometry.laneWidth();
-            double laneOffset = laneCenterOffset * networkDetail();
-            sx += geometry.nx() * laneOffset;
-            sy += geometry.ny() * laneOffset;
-
-            RoadTaper taper = roadTapers.get(geometry);
-            double vehicleAngle = geometry.angle();
-            double widthScale = 1;
-            if (taper != null) {
-                double fraction = (laneIndex + 0.5) / laneCount - 0.5;
-                var section = taper.section(progress);
-                var point = section.point(fraction);
-                sx = point.x;
-                sy = point.y;
-                var before = taper.section(Math.max(0, progress - 0.001)).point(fraction);
-                var after = taper.section(Math.min(1, progress + 0.001)).point(fraction);
-                vehicleAngle = Math.atan2(after.y - before.y, after.x - before.x);
-                widthScale = Math.min(1, Math.hypot(section.acrossX(), section.acrossY()) / roadWidthPixels(geometry));
-            }
+            VehiclePose pose = smoothVehiclePose(traversalIndex, currentTime,
+                    linkVehiclePose(geometry, progress, model.traversalVehicleId(traversalIndex)));
+            double sx = pose.x(), sy = pose.y(), vehicleAngle = pose.angle(), widthScale = pose.widthScale();
 
             String tripMode = model.traversalTripMode(traversalIndex);
             Color drawColor;
             if (showBottleneck) {
-                drawColor = isBottleneck ? BOTTLENECK_CONGESTED : BOTTLENECK_NORMAL;
+                drawColor = isBottleneck ? AppDefaults.Network.BOTTLENECK_CONGESTED : AppDefaults.Network.BOTTLENECK_NORMAL;
             } else {
                 drawColor = colorMode == ColorMode.DEFAULT
                         ? colorProvider.colorForTripMode(tripMode)
@@ -1928,7 +1994,7 @@ public final class NetworkPanel extends JPanel {
             double vehicleWidthPx = Math.max(0.8, geometry.laneWidth() * widthRatio);
 
             if (keepVehiclesVisibleWhenZoomedOut) {
-                vehicleLengthPx = Math.max(minVehicleLengthPixels, vehicleLengthPx);
+                vehicleLengthPx = Math.max(minimumVehicleLengthPixels(model.traversalTripMode(traversalIndex)), vehicleLengthPx);
                 vehicleWidthPx = Math.max(minVehicleWidthPixels, vehicleWidthPx);
             }
 
@@ -1942,6 +2008,88 @@ public final class NetworkPanel extends JPanel {
         }
     }
 
+    private VehiclePose linkVehiclePose(LinkScreenGeometry geometry, double progress, String vehicleId) {
+        int laneCount = geometry.laneCount();
+        int laneIndex = Math.floorMod(vehicleId.hashCode(), laneCount);
+        double sx = geometry.fromX() + geometry.dx() * progress;
+        double sy = geometry.fromY() + geometry.dy() * progress;
+
+        double laneCenterOffset = ((laneIndex + 0.5) - laneCount / 2.0) * geometry.laneWidth();
+        double laneOffset = laneCenterOffset * networkDetail();
+        sx += geometry.nx() * laneOffset;
+        sy += geometry.ny() * laneOffset;
+
+        RoadTaper taper = roadTapers.get(geometry);
+        double vehicleAngle = geometry.angle();
+        var curve=screenCurves.get(geometry);
+        if(curve!=null){var point=curve.at(progress,laneOffset);sx=point.x();sy=point.y();vehicleAngle=point.angle();}
+        double widthScale = 1;
+        if (taper != null) {
+            double fraction = (laneIndex + 0.5) / laneCount - 0.5;
+            var section = taper.section(progress);
+            var point = section.point(fraction);
+            sx = point.x;
+            sy = point.y;
+            var before = taper.section(Math.max(0, progress - 0.001)).point(fraction);
+            var after = taper.section(Math.min(1, progress + 0.001)).point(fraction);
+            vehicleAngle = Math.atan2(after.y - before.y, after.x - before.x);
+            widthScale = Math.min(1, Math.hypot(section.acrossX(), section.acrossY()) / roadWidthPixels(geometry));
+        }
+
+        return new VehiclePose(sx, sy, vehicleAngle, widthScale);
+    }
+
+    private record VehiclePose(double x, double y, double angle, double widthScale) {}
+
+    private double handoffWindow(int index) {
+        return Math.max(0, Math.min(AppDefaults.Motion.HANDOFF_SECONDS,
+                (model.traversalLeaveTime(index) - model.traversalEnterTime(index))
+                        * Math.min(0.5, AppDefaults.Motion.HANDOFF_LINK_FRACTION)));
+    }
+
+    // Stateless in simulation time: seeking and recording take the identical junction path.
+    private VehiclePose smoothVehiclePose(int index, double time, VehiclePose fallback) {
+        int incoming, outgoing;
+        if (model.previousTraversal(index) >= 0
+                && time < model.traversalEnterTime(index) + handoffWindow(index)) {
+            incoming = model.previousTraversal(index); outgoing = index;
+        } else if (model.nextTraversal(index) >= 0
+                && time > model.traversalLeaveTime(index) - handoffWindow(index)) {
+            incoming = index; outgoing = model.nextTraversal(index);
+        } else return fallback;
+        var from = linkScreenGeometries.get(model.traversalLinkId(incoming));
+        var to = linkScreenGeometries.get(model.traversalLinkId(outgoing));
+        if (from == null || to == null) return fallback;
+        double before = handoffWindow(incoming), after = handoffWindow(outgoing);
+        if (before <= 0 || after <= 0) return fallback;
+        double boundary = model.traversalLeaveTime(incoming);
+        double u = Math.max(0, Math.min(1, (time - boundary + before) / (before + after)));
+        String vehicle = model.traversalVehicleId(index);
+        var a = linkVehiclePose(from, 1 - before / (boundary - model.traversalEnterTime(incoming)), vehicle);
+        var b = linkVehiclePose(to, after / (model.traversalLeaveTime(outgoing) - model.traversalEnterTime(outgoing)), vehicle);
+        var link = model.networkData().getLinks().get(model.traversalLinkId(incoming));
+        var joint = worldToScreen(link.toX(), link.toY());
+        joint.x -= panX - cachedPanX; joint.y -= cachedPanY - panY;
+        double v = 1 - u;
+        double x = v*v*a.x() + 2*v*u*joint.x + u*u*b.x();
+        double y = v*v*a.y() + 2*v*u*joint.y + u*u*b.y();
+        double angle = Math.atan2(v*(joint.y-a.y()) + u*(b.y()-joint.y),
+                v*(joint.x-a.x()) + u*(b.x()-joint.x));
+        double weight = Math.max(0, Math.min(1, time <= boundary
+                ? (time - boundary + before) / before : (boundary + after - time) / after));
+        weight = weight * weight * (3 - 2 * weight);
+        double turn = Math.atan2(Math.sin(angle - fallback.angle()), Math.cos(angle - fallback.angle()));
+        return new VehiclePose(fallback.x() + weight*(x-fallback.x()),
+                fallback.y() + weight*(y-fallback.y()), fallback.angle() + weight*turn,
+                fallback.widthScale() + weight*((v*a.widthScale()+u*b.widthScale())-fallback.widthScale()));
+    }
+
+    private void drawOverviewMark(Graphics2D g, int index, double time, VehiclePose pose, double length) {
+        pose = smoothVehiclePose(index, time, pose);
+        double dx = Math.cos(pose.angle()) * length / 2, dy = Math.sin(pose.angle()) * length / 2;
+        g.draw(new Line2D.Double(pose.x()-dx, pose.y()-dy, pose.x()+dx, pose.y()+dy));
+    }
+
     private double naturalProgress(int traversalIndex, double currentTime) {
         double enter = model.traversalEnterTime(traversalIndex);
         double progress = (currentTime - enter) * model.traversalInverseDuration(traversalIndex);
@@ -1953,7 +2101,7 @@ public final class NetworkPanel extends JPanel {
             return;
         }
 
-        g2.setColor(QUEUE_LABEL);
+        g2.setColor(AppDefaults.Network.QUEUE_LABEL);
         for (Map.Entry<String, Integer> queue : playbackController.getLinkQueueCountsView().entrySet()) {
             if (queue.getValue() <= 1) {
                 continue;
@@ -1975,6 +2123,7 @@ public final class NetworkPanel extends JPanel {
 
             double midX = geometry.fromX() + geometry.dx() * 0.5;
             double midY = geometry.fromY() + geometry.dy() * 0.5;
+            var curve=screenCurves.get(geometry);if(curve!=null){var point=curve.at(0.5,0);midX=point.x();midY=point.y();}
             g2.drawString(Integer.toString(queue.getValue()), (int) midX + 2, (int) midY - 2);
         }
     }
@@ -1983,10 +2132,10 @@ public final class NetworkPanel extends JPanel {
         ensureFitted();
 
         Point2D.Double anchorWorld = screenToWorld(e.getX(), e.getY());
-        double factor = Math.pow(1.15, -e.getPreciseWheelRotation());
+        double factor = Math.pow(AppDefaults.Camera.WHEEL_FACTOR, -e.getPreciseWheelRotation());
         // Large regional networks must still reach individual-vehicle scale.
-        double maxZoom = Math.max(2048.0, 24.0 / baseScale);
-        zoom = Math.max(0.05, Math.min(maxZoom, zoom * factor));
+        double maxZoom = Math.max(AppDefaults.Camera.MAX_ZOOM, AppDefaults.Camera.MAX_PIXELS_PER_METER / baseScale);
+        zoom = Math.max(AppDefaults.Camera.MIN_ZOOM, Math.min(maxZoom, zoom * factor));
 
         Point2D.Double anchorScreenAfterZoom = worldToScreen(anchorWorld.x, anchorWorld.y);
         panX += e.getX() - anchorScreenAfterZoom.x;
@@ -2040,6 +2189,7 @@ public final class NetworkPanel extends JPanel {
         List<Integer> truckTraversals = null;
         List<Integer> busTraversals = null;
         List<Integer> railTraversals = null;
+        List<Integer> ferryTraversals = null;
         List<Integer> carTraversals = null;
 
         for (int traversalIndex : traversalIndexes) {
@@ -2063,6 +2213,9 @@ public final class NetworkPanel extends JPanel {
                     busTraversals = new ArrayList<>();
                 }
                 busTraversals.add(traversalIndex);
+            } else if (isFerryMode(mode)) {
+                if (ferryTraversals == null) ferryTraversals = new ArrayList<>();
+                ferryTraversals.add(traversalIndex);
             } else if (isRailMode(mode)) {
                 if (railTraversals == null) {
                     railTraversals = new ArrayList<>();
@@ -2080,6 +2233,7 @@ public final class NetworkPanel extends JPanel {
                 && truckTraversals == null
                 && busTraversals == null
                 && railTraversals == null
+                && ferryTraversals == null
                 && carTraversals == null) {
             return null;
         }
@@ -2088,6 +2242,7 @@ public final class NetworkPanel extends JPanel {
         sortByProgressIfReasonable(truckTraversals, currentTime);
         sortByProgressIfReasonable(busTraversals, currentTime);
         sortByProgressIfReasonable(railTraversals, currentTime);
+        sortByProgressIfReasonable(ferryTraversals, currentTime);
         sortByProgressIfReasonable(bikeTraversals, currentTime);
 
         boolean linkIsBottleneck = false;
@@ -2104,12 +2259,13 @@ public final class NetworkPanel extends JPanel {
                 emptyIfNull(truckTraversals),
                 emptyIfNull(busTraversals),
                 emptyIfNull(railTraversals),
+                emptyIfNull(ferryTraversals),
                 emptyIfNull(bikeTraversals)
         );
     }
 
     private void sortByProgressIfReasonable(List<Integer> traversals, double currentTime) {
-        if (traversals == null || traversals.size() <= 1 || traversals.size() > MAX_SORTED_TRAVERSALS_PER_GROUP) {
+        if (traversals == null || traversals.size() <= 1 || traversals.size() > AppDefaults.Network.MAX_SORTED_TRAVERSALS_PER_GROUP) {
             return;
         }
         traversals.sort((left, right) -> Double.compare(
@@ -2123,7 +2279,7 @@ public final class NetworkPanel extends JPanel {
     }
 
     private void queryVisibleLinks(Set<String> output) {
-        double padding = cacheMargin + Math.max(VIEWPORT_WORLD_PADDING_PX, maxCarriagewayExtent * laneWidthPixels() + 2);
+        double padding = cacheMargin + Math.max(AppDefaults.Network.VIEWPORT_WORLD_PADDING_PX, maxCarriagewayExtent * laneWidthPixels() + 2);
         Point2D.Double topLeft = screenToWorld(-padding, -padding);
         Point2D.Double bottomRight = screenToWorld(
                 getWidth() + padding,
@@ -2136,6 +2292,10 @@ public final class NetworkPanel extends JPanel {
         double maxWorldY = Math.max(topLeft.y, bottomRight.y);
 
         spatialGrid.query(minWorldX, minWorldY, maxWorldX, maxWorldY, output);
+        if(useDetailedGeometry){
+            output.removeIf(id->detailedGeometry.get(id)!=null);
+            detailedGeometry.query(minWorldX,minWorldY,maxWorldX,maxWorldY,output);
+        }
     }
 
     private BufferedImage createCompatibleImage(int width, int height) {
@@ -2258,7 +2418,7 @@ public final class NetworkPanel extends JPanel {
         }
 
         if ((shape == VehicleShape.RECTANGLE || shape == VehicleShape.OVAL) && length >= 10 && width >= 4) {
-            g2.setColor(new Color(0x182B3A));
+            g2.setColor(AppDefaults.Colors.VEHICLE_WINDOW);
             g2.fill(new Rectangle2D.Double(length * 0.12, -hw * 0.72, length * 0.18, width * 0.72));
             g2.setColor(new Color(255, 255, 230, 220));
             g2.fill(new Rectangle2D.Double(hl - 1.4, -hw * 0.72, 1.0, width * 0.22));
@@ -2275,14 +2435,14 @@ public final class NetworkPanel extends JPanel {
         int x = getWidth() - width - 12;
         int y = 12;
 
-        g2.setColor(darkTheme ? new Color(0x101010) : new Color(0xF0F0F0));
+        g2.setColor(darkTheme ? AppDefaults.Colors.DARK_OVERLAY_BACKGROUND : AppDefaults.Colors.LIGHT_OVERLAY_BACKGROUND);
         g2.fillRoundRect(x, y, width, height, 10, 10);
-        g2.setColor(darkTheme ? new Color(0x5A5A5A) : new Color(0xB0B0B0));
+        g2.setColor(darkTheme ? AppDefaults.Colors.DARK_OVERLAY_BORDER : AppDefaults.Colors.LIGHT_OVERLAY_BORDER);
         g2.drawRoundRect(x, y, width, height, 10, 10);
 
         int iconX = x + 14;
         int iconY = y + 16;
-        g2.setColor(darkTheme ? new Color(0xF0F0F0) : new Color(0x202020));
+        g2.setColor(darkTheme ? AppDefaults.Colors.LIGHT_OVERLAY_BACKGROUND : AppDefaults.Colors.LIGHT_OVERLAY_TEXT);
         g2.drawOval(iconX, iconY, 16, 16);
         g2.drawLine(iconX + 8, iconY + 8, iconX + 8, iconY + 3);
         g2.drawLine(iconX + 8, iconY + 8, iconX + 12, iconY + 8);
@@ -2319,12 +2479,12 @@ public final class NetworkPanel extends JPanel {
         int x = getWidth() - width - 12;
         int y = 72;
 
-        g2.setColor(darkTheme ? new Color(0x101010) : new Color(0xF0F0F0));
+        g2.setColor(darkTheme ? AppDefaults.Colors.DARK_OVERLAY_BACKGROUND : AppDefaults.Colors.LIGHT_OVERLAY_BACKGROUND);
         g2.fillRoundRect(x, y, width, height, 10, 10);
-        g2.setColor(darkTheme ? new Color(0x5A5A5A) : new Color(0xB0B0B0));
+        g2.setColor(darkTheme ? AppDefaults.Colors.DARK_OVERLAY_BORDER : AppDefaults.Colors.LIGHT_OVERLAY_BORDER);
         g2.drawRoundRect(x, y, width, height, 10, 10);
 
-        g2.setColor(darkTheme ? new Color(0xEFEFEF) : new Color(0x202020));
+        g2.setColor(darkTheme ? AppDefaults.Colors.DARK_OVERLAY_TEXT : AppDefaults.Colors.LIGHT_OVERLAY_TEXT);
         g2.drawString(legendTitle, x + 10, y + 18);
 
         for (int i = 0; i < maxEntries; i++) {
@@ -2332,7 +2492,7 @@ public final class NetworkPanel extends JPanel {
             int rowY = y + 34 + i * rowHeight;
             g2.setColor(entry.color());
             g2.fillRect(x + 10, rowY - 11, 12, 12);
-            g2.setColor(darkTheme ? new Color(0xEFEFEF) : new Color(0x202020));
+            g2.setColor(darkTheme ? AppDefaults.Colors.DARK_OVERLAY_TEXT : AppDefaults.Colors.LIGHT_OVERLAY_TEXT);
             g2.drawString(entry.label(), x + 28, rowY);
         }
     }
@@ -2354,12 +2514,12 @@ public final class NetworkPanel extends JPanel {
         int x = getWidth() - width - 12;
         int y = 72;
 
-        g2.setColor(darkTheme ? new Color(0x101010) : new Color(0xF0F0F0));
+        g2.setColor(darkTheme ? AppDefaults.Colors.DARK_OVERLAY_BACKGROUND : AppDefaults.Colors.LIGHT_OVERLAY_BACKGROUND);
         g2.fillRoundRect(x, y, width, height, 10, 10);
-        g2.setColor(darkTheme ? new Color(0x5A5A5A) : new Color(0xB0B0B0));
+        g2.setColor(darkTheme ? AppDefaults.Colors.DARK_OVERLAY_BORDER : AppDefaults.Colors.LIGHT_OVERLAY_BORDER);
         g2.drawRoundRect(x, y, width, height, 10, 10);
 
-        g2.setColor(darkTheme ? new Color(0xEFEFEF) : new Color(0x202020));
+        g2.setColor(darkTheme ? AppDefaults.Colors.DARK_OVERLAY_TEXT : AppDefaults.Colors.LIGHT_OVERLAY_TEXT);
         g2.drawString(legendTitle, x + 10, y + 18);
         g2.drawString("Log scale", x + width - 68, y + 18);
 
@@ -2374,10 +2534,10 @@ public final class NetworkPanel extends JPanel {
             g2.setColor(interpolateColor(low, high, t));
             g2.drawLine(barX + i, barY, barX + i, barY + barHeight - 1);
         }
-        g2.setColor(darkTheme ? new Color(0x777777) : new Color(0x909090));
+        g2.setColor(darkTheme ? AppDefaults.Colors.MUTED_GRAY : AppDefaults.Colors.LIGHT_LEGEND_BORDER);
         g2.drawRect(barX, barY, barWidth, barHeight);
 
-        g2.setColor(darkTheme ? new Color(0xEFEFEF) : new Color(0x202020));
+        g2.setColor(darkTheme ? AppDefaults.Colors.DARK_OVERLAY_TEXT : AppDefaults.Colors.LIGHT_OVERLAY_TEXT);
         FontMetrics metrics = g2.getFontMetrics();
         int labelsY = barY + barHeight + 16;
         g2.drawString(legendMin, barX, labelsY);
@@ -2400,8 +2560,8 @@ public final class NetworkPanel extends JPanel {
     private List<LegendEntry> legendEntriesToDraw() {
         if (showBottleneck) {
             return List.of(
-                    new LegendEntry("Normal", BOTTLENECK_NORMAL),
-                    new LegendEntry("Bottleneck", BOTTLENECK_CONGESTED)
+                    new LegendEntry("Normal", AppDefaults.Network.BOTTLENECK_NORMAL),
+                    new LegendEntry("Bottleneck", AppDefaults.Network.BOTTLENECK_CONGESTED)
             );
         }
 
@@ -2486,22 +2646,30 @@ public final class NetworkPanel extends JPanel {
         return normalized.equals("bus");
     }
 
-    private static boolean isRailMode(String mode) {
-        if (mode == null) {
-            return false;
-        }
-        String normalized = normalizeMode(mode);
-        return normalized.equals("tram")
-                || normalized.equals("train")
-                || normalized.equals("rail")
-                || normalized.equals("subway")
-                || normalized.equals("metro")
-                || normalized.equals("ferry")
-                || normalized.equals("funicular");
+    private static boolean isFerryMode(String mode) { return "ferry".equals(normalizeMode(mode)); }
+
+    private double minimumVehicleLengthPixels(String mode) {
+        double multiplier = isFerryMode(mode) ? AppDefaults.Vehicles.FERRY_MIN_LENGTH_MULTIPLIER
+                : isRailMode(mode) ? AppDefaults.Vehicles.RAIL_MIN_LENGTH_MULTIPLIER : 1;
+        return minVehicleLengthPixels * multiplier;
     }
 
-    private static boolean isPtMode(String mode) {
-        return isBusMode(mode) || isRailMode(mode);
+    private double overviewVehicleLength(int index, double screenLength) {
+        String mode = model.traversalTripMode(index);
+        double meters = isFerryMode(mode) ? ferryVehicleLengthMeters : isRailMode(mode) ? railVehicleLengthMeters
+                : isBusMode(mode) ? busVehicleLengthMeters : isBikeMode(mode) ? bikeVehicleLengthMeters
+                : isTruckMode(mode) ? truckVehicleLengthMeters : carLikeVehicleLengthMeters;
+        LinkSegment link = model.networkData().getLinks().get(model.traversalLinkId(index));
+        double pixels = meters / Math.max(1, link.length()) * screenLength;
+        return Math.max(keepVehiclesVisibleWhenZoomedOut ? minimumVehicleLengthPixels(mode) : 1.2, pixels);
+    }
+
+    private boolean isRailMode(String mode) {
+        return !isBusMode(mode) && model.isPublicTransportMode(mode);
+    }
+
+    private boolean isPtMode(String mode) {
+        return model.isPublicTransportMode(mode);
     }
 
     private static double clampWidthRatio(double value) {
@@ -2520,23 +2688,6 @@ public final class NetworkPanel extends JPanel {
         return mode == null ? "" : mode.toLowerCase(Locale.ROOT);
     }
 
-    private static Set<String> defaultTransportModes(List<String> availableModes) {
-        Set<String> selected = new HashSet<>();
-        Set<String> defaults = Set.of("car", "bike", "truck", "bus", "tram");
-        for (String mode : availableModes) {
-            String normalized = normalizeMode(mode);
-            if (defaults.contains(normalized)) {
-                selected.add(normalized);
-            }
-        }
-        if (selected.isEmpty()) {
-            for (String mode : availableModes) {
-                selected.add(normalizeMode(mode));
-            }
-        }
-        return selected;
-    }
-
     private record PreparedLinkVehicles(
             LinkSegment link,
             LinkScreenGeometry geometry,
@@ -2545,6 +2696,7 @@ public final class NetworkPanel extends JPanel {
             List<Integer> truckTraversals,
             List<Integer> busTraversals,
             List<Integer> railTraversals,
+            List<Integer> ferryTraversals,
             List<Integer> bikeTraversals
     ) {
     }

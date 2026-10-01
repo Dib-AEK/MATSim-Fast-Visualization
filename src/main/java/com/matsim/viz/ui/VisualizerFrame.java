@@ -1,5 +1,6 @@
 package com.matsim.viz.ui;
 
+import com.matsim.viz.config.AppDefaults;
 import com.matsim.viz.domain.ColorMode;
 import com.matsim.viz.engine.PlaybackController;
 import com.matsim.viz.engine.SimulationModel;
@@ -91,7 +92,7 @@ public final class VisualizerFrame extends JFrame {
         refreshSpeedLabel(initialSpeed);
 
         JComboBox<ColorMode> colorCombo = new JComboBox<>(ColorMode.values());
-        colorCombo.setSelectedItem(ColorMode.DEFAULT);
+        colorCombo.setSelectedItem(ColorMode.valueOf(AppDefaults.Display.COLOR_MODE));
         colorCombo.addActionListener(e -> {
             ColorMode mode = (ColorMode) colorCombo.getSelectedItem();
             if (mode != null) {
@@ -99,7 +100,7 @@ public final class VisualizerFrame extends JFrame {
             }
         });
 
-        JCheckBox queuesCheckbox = new JCheckBox("Show link vehicle counts", false);
+        JCheckBox queuesCheckbox = new JCheckBox("Show link vehicle counts", AppDefaults.Display.SHOW_QUEUES);
         queuesCheckbox.addActionListener(e -> networkPanel.setShowQueues(queuesCheckbox.isSelected()));
 
         timeLabel = new JLabel();
@@ -118,7 +119,7 @@ public final class VisualizerFrame extends JFrame {
         add(controls, BorderLayout.NORTH);
 
         final long[] previousTickNanos = {System.nanoTime()};
-        Timer timer = new Timer(33, e -> {
+        Timer timer = new Timer(AppDefaults.Window.LEGACY_TIMER_MS, e -> {
             long now = System.nanoTime();
             double deltaSeconds = (now - previousTickNanos[0]) / 1_000_000_000.0;
             previousTickNanos[0] = now;
@@ -133,7 +134,7 @@ public final class VisualizerFrame extends JFrame {
         }));
 
         refreshControlState();
-        setSize(1400, 900);
+        setSize(AppDefaults.Window.LEGACY_WIDTH, AppDefaults.Window.LEGACY_HEIGHT);
         setLocationRelativeTo(null);
     }
 
@@ -304,7 +305,7 @@ public final class VisualizerFrame extends JFrame {
         purposeCombo.setPreferredSize(new Dimension(170, 24));
 
         JButton purposeColorButton = createColorButton(
-                purposeCombo.getItemCount() == 0 ? new Color(0x666666) : networkPanel.getTripPurposeColor((String) purposeCombo.getSelectedItem())
+                purposeCombo.getItemCount() == 0 ? AppDefaults.Colors.MISSING_METADATA : networkPanel.getTripPurposeColor((String) purposeCombo.getSelectedItem())
         );
 
         purposeCombo.addActionListener(e -> {
@@ -348,7 +349,7 @@ public final class VisualizerFrame extends JFrame {
         categoryCombo.setPreferredSize(new Dimension(170, 24));
 
         JButton categoryColorButton = createColorButton(
-                categoryCombo.getItemCount() == 0 ? new Color(0x666666) : networkPanel.getSexColor((String) categoryCombo.getSelectedItem())
+                categoryCombo.getItemCount() == 0 ? AppDefaults.Colors.MISSING_METADATA : networkPanel.getSexColor((String) categoryCombo.getSelectedItem())
         );
 
         categoryCombo.addActionListener(e -> {
@@ -481,7 +482,7 @@ public final class VisualizerFrame extends JFrame {
         button.setPreferredSize(new Dimension(28, 20));
         button.setBackground(color);
         button.setOpaque(true);
-        button.setBorder(BorderFactory.createLineBorder(new Color(0x333333)));
+        button.setBorder(BorderFactory.createLineBorder(AppDefaults.Colors.SWATCH_BORDER));
         return button;
     }
 

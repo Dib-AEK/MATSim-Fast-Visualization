@@ -1,5 +1,7 @@
 package com.matsim.viz.engine;
 
+import com.matsim.viz.config.AppDefaults;
+
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -53,7 +55,11 @@ public final class PlaybackController {
     public void seek(double targetTime) {
         synchronized (stateLock) {
             currentTime = Math.max(startTime, Math.min(endTime, targetTime));
-            rebuildStateAt(currentTime);
+            int target = model.firstTransitionAfter(currentTime);
+            if (Math.abs((long) target - nextTransitionIndex) <= AppDefaults.Playback.INCREMENTAL_SEEK_TRANSITIONS) {
+                while (nextTransitionIndex < target) applyTransition(nextTransitionIndex++, false);
+                while (nextTransitionIndex > target) applyTransition(--nextTransitionIndex, true);
+            } else rebuildStateAt(currentTime);
         }
         notifyListeners();
     }
@@ -159,7 +165,7 @@ public final class PlaybackController {
                 break;
             }
             if (transitionTime > fromTime) {
-                applyTransition(nextTransitionIndex);
+                applyTransition(nextTransitionIndex, false);
             }
             nextTransitionIndex++;
         }
@@ -169,44 +175,32 @@ public final class PlaybackController {
         activeTraversalIndexes.clear();
         activeTraversalIndexesByLink.clear();
         linkQueueCounts.clear();
-        nextTransitionIndex = 0;
-
-        int transitionCount = model.transitionCount();
-        while (nextTransitionIndex < transitionCount) {
-            double transitionTime = model.transitionTime(nextTransitionIndex);
-            if (transitionTime > time) {
-                break;
-            }
-            applyTransition(nextTransitionIndex);
-            nextTransitionIndex++;
-        }
+        nextTransitionIndex = model.firstTransitionAfter(time);
+        model.forEachActiveTraversal(time, this::addTraversal);
     }
 
-    private void applyTransition(int transitionIndex) {
-        boolean enter = model.transitionEnter(transitionIndex);
-        int traversalIndex = model.transitionTraversalIndex(transitionIndex);
-        String linkId = model.transitionLinkId(transitionIndex);
+    private void applyTransition(int transitionIndex, boolean reverse) {
+        int index = model.transitionTraversalIndex(transitionIndex);
+        // An instantaneous traversal never occupies a link, in either seek direction.
+        if (model.traversalLeaveTime(index) <= model.traversalEnterTime(index)) return;
+        if (model.transitionEnter(transitionIndex) != reverse) addTraversal(index);
+        else removeTraversal(index);
+    }
 
-        if (enter) {
-            activeTraversalIndexes.add(traversalIndex);
-            activeTraversalIndexesByLink.computeIfAbsent(linkId, key -> new ArrayList<>()).add(traversalIndex);
-            linkQueueCounts.merge(linkId, 1, Integer::sum);
-        } else {
-            activeTraversalIndexes.remove(traversalIndex);
-            List<Integer> linkTraversals = activeTraversalIndexesByLink.get(linkId);
-            if (linkTraversals != null) {
-                linkTraversals.removeIf(index -> index == traversalIndex);
-                if (linkTraversals.isEmpty()) {
-                    activeTraversalIndexesByLink.remove(linkId);
-                }
-            }
-            linkQueueCounts.compute(linkId, (k, value) -> {
-                if (value == null || value <= 1) {
-                    return null;
-                }
-                return value - 1;
-            });
-        }
+    private void addTraversal(int index) {
+        if (!activeTraversalIndexes.add(index)) return;
+        String linkId = model.traversalLinkId(index);
+        activeTraversalIndexesByLink.computeIfAbsent(linkId, key -> new ArrayList<>()).add(index);
+        linkQueueCounts.merge(linkId, 1, Integer::sum);
+    }
+
+    private void removeTraversal(int index) {
+        if (!activeTraversalIndexes.remove(index)) return;
+        String linkId = model.traversalLinkId(index);
+        List<Integer> traversals = activeTraversalIndexesByLink.get(linkId);
+        traversals.remove(Integer.valueOf(index));
+        if (traversals.isEmpty()) activeTraversalIndexesByLink.remove(linkId);
+        linkQueueCounts.computeIfPresent(linkId, (k, value) -> value <= 1 ? null : value - 1);
     }
 
     private void notifyListeners() {

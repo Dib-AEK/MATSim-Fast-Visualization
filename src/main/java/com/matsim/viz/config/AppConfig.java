@@ -49,7 +49,10 @@ public record AppConfig(
         String uiMapCrs,
         double uiDetailStartLanePixels,
         double uiDetailFullLanePixels,
-        double uiOverviewVehicleCoverage
+        double uiOverviewVehicleCoverage,
+        double uiVehicleLengthFerryMeters,
+        double uiVehicleWidthRatioFerry,
+        String uiVehicleShapeFerry
 ) {
     public boolean hasMatsimConfigFile() {
         return matsimConfigFile != null;

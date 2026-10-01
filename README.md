@@ -22,6 +22,11 @@ It shows multiple features, such as location of bottlenecks.
 - Trip filtering: all, car-only, bike-only, or car+bike.
 - Distinct mode colors when car+bike filter is selected.
 - Checkbox-based multi-select filtering for both network modes and trip modes.
+- **Public transport** beside **All / None** selects only PT modes present in the
+  list. Initial selections include all PT modes, including rail and ferry, plus the
+  configured road-mode defaults. Classification combines standard PT labels with
+  the loaded schedule's stop modes, so custom transit modes are included too.
+  The same selection shortcut is available for heatmap, stop and editor mode lists.
 - Simulation playback from 0h to 24h (configurable).
 - Live zoom and pan while playback is running.
 - Vehicle coloring by:
@@ -75,7 +80,9 @@ ordering, and renders synthetic car/bus previews to `target/carriageways-dark.pn
 
 ## Project Structure
 
-- `config/app.properties`: MATSim config path and playback defaults
+- `config/app.properties`: MATSim config path and optional setting overrides
+- `src/main/java/com/matsim/viz/config/AppDefaults.java`: all application defaults, organized into static nested sections
+- `AGENTS.md`: agent-oriented architecture, invariants, configuration rules, and validation commands
 - `src/main/java/com/matsim/viz/config`: visualization app config loading
 - `src/main/java/com/matsim/viz/parser`: MATSim scenario/config integration and events handlers
 - `src/main/java/com/matsim/viz/engine`: playback state and transition indexing
@@ -95,6 +102,13 @@ ordering, and renders synthetic car/bus previews to `target/carriageways-dark.pn
 - Persistent processed-data cache (network + traversals + metadata) to skip reprocessing unchanged simulations.
 
 ## Setup
+
+Built-in defaults live in **`AppDefaults.java`**, including visualization, vehicle
+geometry/colors, playback, recording presets and buffering, maps, editor creation
+values, and renderer tuning. Change defaults there. `ConfigLoader.java` lists the
+settings that can also be overridden in `config/app.properties`; omitted keys inherit
+the class values. UI changes override them for the current session. The shipped
+properties file keeps only scenario-specific overrides so it does not mask defaults.
 
 1. Ensure Java 21+ is installed.
 2. Update `config/app.properties` with `matsim.config.file`.
@@ -160,6 +174,17 @@ render.java2d.force.vram=false
 - `Sex Colors`: assign color by sex category
 - `Vehicle Geometry`: adjust length and width ratios for car, bike, and truck (truck default length: `10 m`)
 - `Vehicle Geometry`: optional zoom-out visibility boost with configurable minimum vehicle length/width in screen pixels
+
+Vehicle visibility defaults are **4 px long / 2 px wide**, including public transport.
+Rail/tram display length defaults to **35 m**, and ferries have an independent **45 m**
+length setting under **Vehicle Geometry → Ferry**. With the visibility boost enabled,
+rail and ferry length floors are respectively 1.25 and 1.5 times the global pixel minimum,
+so they remain distinguishable in overview. Overview markers respect these sizes
+where space permits; crowded/short links still compress or sample marks to preserve
+gaps, and detailed vehicles retain lane-width constraints. These are display sizes,
+not changes to simulation inputs. All defaults are in `AppDefaults`.
+Optional ferry overrides: `ui.vehicle.length.ferry.m`, `ui.vehicle.width.ratio.ferry`,
+and `ui.vehicle.shape.ferry`.
 - Top-right red `Quit` button to exit the app quickly
 - Default startup filters show only `car`, `bike`, and `truck`-like modes for both network links and vehicle trips
 - Mouse wheel: zoom
@@ -234,8 +259,15 @@ java -cp "target/test-classes;target/classes;$dependencies" com.matsim.viz.ui.Re
 
 ## Map background and CRS
 
-At the **bottom of the sidebar**, open **Map Background** and enable **Add OpenStreetMap
-background**. The **Network CRS** field defaults to `EPSG:2056` (Swiss LV95). Enter another
+At the **bottom of the sidebar**, open **Map Background** and enable **Add map
+background**. Choose **OpenStreetMap**, **Light monochrome**, or **Dark monochrome**
+in **Map style**. The monochrome options restyle the same OSM tiles locally, retaining
+labels without the original colors; no additional provider account or API key is needed.
+The network editor offers the same choices. Styles share the original disk tile cache,
+and conversion runs once per loaded tile on a background worker. The selected style
+also appears in recordings. OpenStreetMap remains the default.
+
+The **Network CRS** field defaults to `EPSG:2056` (Swiss LV95). Enter another
 MATSim-supported CRS, such as `EPSG:4326` or `EPSG:32632`, then click **Apply CRS**.
 Invalid CRS entries show an error and leave the current map unchanged.
 
@@ -424,3 +456,97 @@ code automatically invalidates the parsed-data cache on the next normal launch.
 
 See [the Geneva bus event audit](docs/BUS_EVENT_AUDIT.md) for the inspected run,
 concrete bus occupancy examples and event-handling regression checks.
+
+### Detailed link geometry from CSV
+
+Under **Display**, enable **Use detailed link geometry (CSV)**. At startup the viewer
+looks beside the MATSim config for files ending in `detailed_network.csv`, reads the
+selected file in the background, and enables the checkbox when usable geometry is
+ready. Detailed links turn on automatically; uncheck the option to show straight
+links instead. If several matching files exist, choose one from the
+file list. If no file is found, or none of its geometries can be used, the checkbox
+stays disabled and the status explains why.
+
+CSV columns are `LinkId` / `Geometry` (case-insensitive; `link_id` also works).
+Geometry is WKT `LINESTRING`, quoted when it contains the CSV delimiter. Comma and
+semicolon delimiters and UTF-8 BOMs are supported. Coordinates must use the same
+projected CRS as the network XML; the CSV has no CRS metadata to transform them.
+Only source IDs needed by the loaded network are retained in memory.
+
+For a merged XML link, its `old_link_id` attribute is interpreted as an ordered,
+underscore-separated chain of original CSV IDs. The full chain takes priority over
+the geometry of the retained ID. Individual segments and reversed chains are oriented
+to run from the XML from-node to the to-node, then stitched together. The retained
+ID may be either the first or last segment, and may be included in or omitted from
+the chain attribute. Endpoints within 2 network units are snapped together/to the XML
+nodes to accommodate rounding. Missing pieces, disconnected chains, duplicate IDs,
+invalid lines and mismatched coordinates use the complete straight XML link instead
+of drawing a misleading partial chain. The status reports matching and fallback counts.
+
+When enabled, roads, lane markings, vehicles, heatmaps and recorded video follow
+the same path. Vehicle progress follows distance along the polyline, with heading
+following the local segment. The geometry spatial index includes bends outside the
+endpoint bounding box. At overview zoom, roads remain thin but keep their curves.
+MATSim simulation lengths, event times, link IDs and capacities are unchanged. The
+network editor continues to edit the XML network; this toggle is a playback display
+setting and does not export modified geometry.
+
+The Geneva output network checked against `switzerland_detailed_network.csv` matched
+135,788 links, including 2,438 reconstructed merged links, with 1,325 straight fallbacks.
+`DetailedGeometryCheck` covers CSV discovery, reversed chains, retained-first/last IDs,
+missing geometry, vehicle placement, viewport culling and restoring the straight view.
+
+Connected vehicle link transitions blend position and heading over a short junction curve,
+for all modes and both overview/detail rendering. The duration and maximum fraction of
+each traversal are in `AppDefaults.Motion`. This is a display interpolation: MATSim
+occupancy and event times remain unchanged. Gaps between trips and disconnected links
+are not interpolated. Seeking and video capture use the same simulation-time calculation.
+
+### Fast time jumps and video encoding
+
+Time jumps use a balanced interval index of active traversals; short forward/backward
+jumps update only the crossed events. The time slider coalesces drag updates once per
+animation pulse. This preserves MATSim enter/leave times and queue counts; no scenario
+cache rebuild is needed. The derived index uses about 12 additional bytes per traversal.
+
+Video export automatically tries FFmpeg H.264 hardware encoders (NVIDIA NVENC, Intel
+Quick Sync, AMD AMF), then FFmpeg's multithreaded libx264 CPU encoder. Each backend is
+tested at the recording resolution and frame rate before use. If FFmpeg is unavailable
+or fails, the bundled JCodec encoder remains the fallback. Encoding runs on the existing
+worker after Stop; the button shows frame progress. Original frames remain available
+for retry/recovery until export succeeds. Resolution and frame rate are unchanged;
+quality-oriented QP/CRF 18 settings and 8-bit YUV 4:2:0 MP4 preserve Windows compatibility.
+Hardware and software encoders are not bit-identical.
+
+Optional portable Windows installation (from the Gyan build linked by ffmpeg.org):
+
+```powershell
+powershell -File scripts/install-ffmpeg.ps1
+```
+
+This verifies the published SHA256 and installs in ignored `tools/ffmpeg/`, without
+changing system PATH. An existing `ffmpeg` on PATH is also supported. Advanced JVM
+properties: `matsim.recording.ffmpeg` selects an executable, and
+`matsim.recording.encoder` selects `auto`, `h264_nvenc`, `h264_qsv`, `h264_amf`,
+`libx264`, or `jcodec`. All fallback values/tuning live in `AppDefaults.Recording`.
+Explicit encoder selection reports failure rather than silently using another backend.
+`PlaybackSeekCheck` checks random/boundary seeks against an independent occupancy oracle;
+optional `EncodingSpeedCheck` compares native and Java export on identical source frames.
+
+Map repainting reuses a bounded cache of tile geometry projected into the network CRS.
+Tiles use a single image draw when the sampled mesh differs by at most 0.25 output
+pixels from an affine transform; curved projections retain the mesh renderer. The
+error check includes recording scale. New tiles refresh only the map raster, preserving
+road geometry and its cached camera during panning. These settings live in `AppDefaults.Maps`.
+The compatible image cache permits Java2D managed-image acceleration where supported;
+GPU acceleration is not required for playback or export.
+
+Road volume and public-transport volume heatmaps encode volume in both colour and
+link thickness. **Heatmap Settings** provides **Minimum volume thickness (px)** and
+**Maximum volume thickness (px)**, defaulting to 1.5 and 10 logical screen pixels.
+Changes apply immediately without preprocessing. Width uses the same fixed daily
+logarithmic volume scale as colour and interpolates between time bins. Empty links
+use the minimum; the daily maximum uses the maximum. At overview zoom, coincident
+directions use the larger volume, matching the colour aggregation. Detailed CSV
+curves remain supported. Speed heatmaps and vehicle animation retain physical road
+widths. Defaults and control bounds are in `AppDefaults.Heatmap`.

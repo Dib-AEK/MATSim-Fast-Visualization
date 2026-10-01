@@ -45,7 +45,10 @@ final class RoadTaper {
     }
 
     private final Section base;
-    private final double dx, dy, reach;
+    private com.matsim.viz.domain.LinkPolyline curve;
+    private double curveWidth;
+    private final double dx, dy;
+    private double reach;
     private Section start, end;
     private Path2D cachedSurface;
 
@@ -53,33 +56,43 @@ final class RoadTaper {
         base = new Section(x, y, nx * width, ny * width);
         this.dx = dx;
         this.dy = dy;
-        this.reach = Math.min(0.4, reach / Math.hypot(dx, dy));
+        this.reach = Math.min(0.4, reach / Math.max(1e-9,Math.hypot(dx, dy)));
+    }
+
+    RoadTaper(com.matsim.viz.domain.LinkPolyline curve,double width,double reach) {
+        this(curve.x(0),curve.y(0),curve.x(curve.size()-1)-curve.x(0),curve.y(curve.size()-1)-curve.y(0),0,1,width,reach);
+        this.curve=curve;this.curveWidth=width;this.reach=Math.min(0.4,reach/curve.length());
     }
 
     void start(Section section) { start = section; cachedSurface = null; }
     void end(Section section) { end = section; cachedSurface = null; }
 
     Section section(double t) {
+        Section local=baseSection(t);
         Section target = t < reach ? start : t > 1 - reach ? end : null;
-        double x = base.x + dx * t, y = base.y + dy * t;
-        if (target == null) return new Section(x, y, base.acrossX, base.acrossY);
+        if (target == null) return local;
         boolean atStart = t < reach;
         double u = (atStart ? t : 1 - t) / reach;
         double weight = 1 - u * u * (3 - 2 * u);
-        return new Section(x + weight * (target.x - base.x - (atStart ? 0 : dx)),
-                y + weight * (target.y - base.y - (atStart ? 0 : dy)),
-                base.acrossX + weight * (target.acrossX - base.acrossX),
-                base.acrossY + weight * (target.acrossY - base.acrossY));
+        Section endpoint=baseSection(atStart?0:1);
+        return new Section(local.x+weight*(target.x-endpoint.x),local.y+weight*(target.y-endpoint.y),
+                local.acrossX+weight*(target.acrossX-local.acrossX),local.acrossY+weight*(target.acrossY-local.acrossY));
+    }
+    private Section baseSection(double t){
+        if(curve==null)return new Section(base.x+dx*t,base.y+dy*t,base.acrossX,base.acrossY);
+        var p=curve.at(t,0);return new Section(p.x(),p.y(),-Math.sin(p.angle())*curveWidth,Math.cos(p.angle())*curveWidth);
     }
 
     Path2D surface() {
         if (cachedSurface != null) return cachedSurface;
         Path2D path = new Path2D.Double();
+        var samples=new TreeSet<Double>();
+        for(int i=0;i<=16;i++){samples.add(reach*i/16);samples.add(1-reach+reach*i/16);}
+        if(curve!=null)for(int i=0;i<curve.size();i++)samples.add(curve.fraction(i));
+        var times=new ArrayList<>(samples);
         for (int side = 0; side < 2; side++) {
-            for (int i = 0; i < 34; i++) {
-                int sample = side == 0 ? i : 33 - i;
-                double t = sample <= 16 ? reach * sample / 16.0
-                        : 1 - reach + reach * (sample - 17) / 16.0;
+            for (int i = 0; i < times.size(); i++) {
+                double t=times.get(side==0?i:times.size()-1-i);
                 Point2D.Double point = section(t).point(side == 0 ? -0.5 : 0.5);
                 if (side == 0 && i == 0) path.moveTo(point.x, point.y);
                 else path.lineTo(point.x, point.y);

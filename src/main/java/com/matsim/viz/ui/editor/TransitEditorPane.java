@@ -1,5 +1,6 @@
 package com.matsim.viz.ui.editor;
 
+import com.matsim.viz.config.AppDefaults;
 import javafx.application.Platform;
 import javafx.beans.property.SimpleStringProperty;
 import javafx.collections.FXCollections;
@@ -29,7 +30,7 @@ public final class TransitEditorPane extends VBox {
     private final Label status=new Label("Load the scenario transit files, or create a new transit system.");
     private final ComboBox<String> lines=new ComboBox<>(), routes=new ComboBox<>();
     private final CheckBox show=new CheckBox("Show PT lines"), all=new CheckBox("Show all lines (may be slower)");
-    private final TextField mode=new TextField("bus");
+    private final TextField mode=new TextField(AppDefaults.Transit.MODE);
     private final TextArea path=new TextArea();
     private final TableView<Row> stops=new TableView<>(), departures=new TableView<>();
     private final VBox editor=new VBox(8);
@@ -44,7 +45,7 @@ public final class TransitEditorPane extends VBox {
         Button load=new Button("Load transit schedule + vehicles"),empty=new Button("New transit system");
         load.setOnAction(e->loadFiles());empty.setOnAction(e->load(null,null));
         getChildren().addAll(load,empty,status,editor);editor.setDisable(true);
-        show.setSelected(true);show.selectedProperty().addListener((o,a,b)->refreshOverlay());all.selectedProperty().addListener((o,a,b)->refreshOverlay());
+        show.setSelected(AppDefaults.Transit.SHOW_LINES);show.selectedProperty().addListener((o,a,b)->refreshOverlay());all.selectedProperty().addListener((o,a,b)->refreshOverlay());
         lines.setMaxWidth(Double.MAX_VALUE);routes.setMaxWidth(Double.MAX_VALUE);
         lines.setPromptText("Select line");routes.setPromptText("Select route / direction");
         lines.valueProperty().addListener((o,a,b)->{
@@ -65,7 +66,7 @@ public final class TransitEditorPane extends VBox {
             if(lines.getValue()==null)throw new IllegalArgumentException("Select or create a line first");
             if(!discardDraft())return;
             String id=ask("New route ID","");if(id==null)return;
-            model.addRoute(lines.getValue(),id,"bus");refreshRoutes();routes.setValue(id);
+            model.addRoute(lines.getValue(),id,AppDefaults.Transit.MODE);refreshRoutes();routes.setValue(id);
         });
         path.setPrefRowCount(3);path.setWrapText(true);path.setPromptText("Ordered network link IDs, separated by spaces or commas");
         mode.textProperty().addListener((o,a,b)->changed());path.textProperty().addListener((o,a,b)->changed());
@@ -79,7 +80,7 @@ public final class TransitEditorPane extends VBox {
         Button addStop=button("Add stop to route",()->{
             String id=ask("Existing stop ID (use Create stop for a new facility)","");if(id==null)return;
             if(!model.schedule().getFacilities().containsKey(Id.create(id,TransitStopFacility.class)))throw new IllegalArgumentException("Stop ID not found");
-            stops.getItems().add(new Row(id,"00:00:00","00:00:00","true","true","true"));changed();
+            stops.getItems().add(new Row(id,AppDefaults.Transit.STOP_OFFSET,AppDefaults.Transit.STOP_OFFSET,Boolean.toString(AppDefaults.Transit.WAIT_FOR_DEPARTURE),Boolean.toString(AppDefaults.Transit.ALLOW_BOARDING),Boolean.toString(AppDefaults.Transit.ALLOW_ALIGHTING)));changed();
         });
         Button removeStop=button("Remove stop from route",()->{stops.getItems().remove(stops.getSelectionModel().getSelectedItem());changed();});
         Button up=button("Move up",()->moveStop(-1)),down=button("Move down",()->moveStop(1));
@@ -99,7 +100,7 @@ public final class TransitEditorPane extends VBox {
             var stop=model.schedule().getFacilities().get(Id.create(row.text(0),TransitStopFacility.class));
             if(stop!=null)SwingUtilities.invokeLater(()->network.centreOn(stop.getCoord().getX(),stop.getCoord().getY()));
         });
-        Button addDeparture=button("Add departure",()->{departures.getItems().add(new Row("new-"+(departures.getItems().size()+1),"07:00:00",""));changed();});
+        Button addDeparture=button("Add departure",()->{departures.getItems().add(new Row("new-"+(departures.getItems().size()+1),AppDefaults.Transit.FIRST_DEPARTURE,""));changed();});
         Button removeDeparture=button("Remove departure",()->{departures.getItems().remove(departures.getSelectionModel().getSelectedItem());changed();});
         Button generate=button("Generate departures",this::generateDepartures);
         Button apply=button("Apply route changes",this::applyRoute);apply.getStyleClass().add("accent-button");
@@ -116,7 +117,7 @@ public final class TransitEditorPane extends VBox {
                 section("Route path",routeBox),section("Stops and offsets",stopBox),section("Departures",departureBox),help,
                 apply,revert,section("Transit vehicles",new VBox(6,inspectVehicles,type,vehicle)),validate,export);
     }
-    private TitledPane section(String title,Node content){var pane=new TitledPane(title,content);pane.setExpanded(false);return pane;}
+    private TitledPane section(String title,Node content){var pane=new TitledPane(title,content);pane.setExpanded(AppDefaults.Display.SECTIONS_EXPANDED);return pane;}
     private void table(TableView<Row> table,String... columns){
         table.setEditable(true);table.setPrefHeight(220);table.setColumnResizePolicy(TableView.UNCONSTRAINED_RESIZE_POLICY);
         for(int i=0;i<columns.length;i++){final int index=i;var col=new TableColumn<Row,String>(columns[i]);col.setPrefWidth(i==0?130:110);
@@ -191,19 +192,19 @@ public final class TransitEditorPane extends VBox {
         if(values==null)return;
         if(!create&&!old.getId().toString().equals(values.get("ID")))throw new IllegalArgumentException("Existing stop IDs cannot be renamed; create a new stop instead");
         checkLink(values.get("Network link ID"));model.putStop(values.get("ID"),values.get("Name"),Double.parseDouble(values.get("X (network CRS)")),Double.parseDouble(values.get("Y (network CRS)")),values.get("Network link ID"),create);
-        if(create){stops.getItems().add(new Row(values.get("ID"),"00:00:00","00:00:00","true","true","true"));changed();}
+        if(create){stops.getItems().add(new Row(values.get("ID"),AppDefaults.Transit.STOP_OFFSET,AppDefaults.Transit.STOP_OFFSET,Boolean.toString(AppDefaults.Transit.WAIT_FOR_DEPARTURE),Boolean.toString(AppDefaults.Transit.ALLOW_BOARDING),Boolean.toString(AppDefaults.Transit.ALLOW_ALIGHTING)));changed();}
         refreshOverlay();status.setText("Stop saved in this session. Apply route changes and export when ready.");
     }
     private void generateDepartures(){
-        var values=form("Add regular departures",fields("First departure","07:00:00","Last departure","09:00:00","Headway (minutes)","10","Vehicle IDs (comma-separated)","","Departure ID prefix","service-"));if(values==null)return;
+        var values=form("Add regular departures",fields("First departure",AppDefaults.Transit.FIRST_DEPARTURE,"Last departure",AppDefaults.Transit.LAST_DEPARTURE,"Headway (minutes)",AppDefaults.Transit.HEADWAY_MINUTES,"Vehicle IDs (comma-separated)","","Departure ID prefix",AppDefaults.Transit.DEPARTURE_PREFIX));if(values==null)return;
         double start=TransitEditorModel.seconds(values.get("First departure")),end=TransitEditorModel.seconds(values.get("Last departure")),step=Double.parseDouble(values.get("Headway (minutes)"))*60;
         List<String> ids=Arrays.stream(values.get("Vehicle IDs (comma-separated)").split(",")).map(String::trim).filter(v->!v.isBlank()).toList();
-        if(!Double.isFinite(step)||step<=0||end<start||(end-start)/step>10000||ids.isEmpty())throw new IllegalArgumentException("Use a positive headway, an ordered time range (up to 10,000 departures), and vehicle IDs");
+        if(!Double.isFinite(step)||step<=0||end<start||(end-start)/step>AppDefaults.Transit.MAX_GENERATED_DEPARTURES||ids.isEmpty())throw new IllegalArgumentException("Use a positive headway, an ordered time range (up to "+AppDefaults.Transit.MAX_GENERATED_DEPARTURES+" departures), and vehicle IDs");
         int i=0;for(double time=start;time<=end+1e-6;time+=step){departures.getItems().add(new Row(values.get("Departure ID prefix")+i,org.matsim.core.utils.misc.Time.writeTime(time),ids.get(i%ids.size())));i++;}changed();
     }
     private void typeDialog(){
         String id=ask("Vehicle type ID (existing or new)","");if(id==null)return;var old=model.vehicles().getVehicleTypes().get(Id.create(id,VehicleType.class));
-        var values=form("Vehicle type "+id,fields("Network mode",old==null?"bus":old.getNetworkMode(),"Seats",old==null?"40":""+old.getCapacity().getSeats(),"Standing places",old==null?"40":""+old.getCapacity().getStandingRoom(),"Length (m)",old==null?"12":""+old.getLength(),"Maximum speed (km/h)",old==null?"80":""+(old.getMaximumVelocity()*3.6)));if(values==null)return;
+        var values=form("Vehicle type "+id,fields("Network mode",old==null?AppDefaults.Transit.MODE:old.getNetworkMode(),"Seats",old==null?AppDefaults.Transit.SEATS:""+old.getCapacity().getSeats(),"Standing places",old==null?AppDefaults.Transit.STANDING_PLACES:""+old.getCapacity().getStandingRoom(),"Length (m)",old==null?AppDefaults.Transit.VEHICLE_LENGTH_M:""+old.getLength(),"Maximum speed (km/h)",old==null?AppDefaults.Transit.VEHICLE_SPEED_KMH:""+(old.getMaximumVelocity()*3.6)));if(values==null)return;
         model.putVehicleType(id,Integer.parseInt(values.get("Seats")),Integer.parseInt(values.get("Standing places")),Double.parseDouble(values.get("Length (m)")),Double.parseDouble(values.get("Maximum speed (km/h)")),values.get("Network mode"));status.setText("Vehicle type updated.");
     }
     private void vehicleDialog(){var values=form("Add vehicle or change its type",fields("Vehicle ID","","Vehicle type ID",""));if(values!=null){model.putVehicle(values.get("Vehicle ID"),values.get("Vehicle type ID"));status.setText("Vehicle updated.");}}

@@ -1,5 +1,6 @@
 package com.matsim.viz.ui;
 
+import com.matsim.viz.config.AppDefaults;
 import javax.imageio.ImageIO;
 import javax.imageio.ImageWriteParam;
 import java.awt.image.BufferedImage;
@@ -14,7 +15,7 @@ final class RecordingFrameStore {
     private final Path directory;
     private final long budget;
     private final List<Frame> frames = new ArrayList<>();
-    private final Semaphore pending = new Semaphore(2);
+    private final Semaphore pending = new Semaphore(AppDefaults.Recording.SPILL_QUEUE_FRAMES);
     private final ExecutorService writer = Executors.newSingleThreadExecutor(r -> {
         Thread t = new Thread(r, "recording-frame-writer"); t.setDaemon(true); return t;
     });
@@ -25,14 +26,14 @@ final class RecordingFrameStore {
     static long defaultBudget() {
         Runtime runtime=Runtime.getRuntime();
         long available=runtime.maxMemory()-(runtime.totalMemory()-runtime.freeMemory());
-        long requested=Math.max(0,Math.min(4096,Long.getLong("matsim.recording.bufferMiB",512L))) * 1024 * 1024;
-        return Math.min(requested,Math.min(runtime.maxMemory()/4,available/3));
+        long requested=Math.max(0,Math.min(AppDefaults.Recording.MAX_BUFFER_MIB,Long.getLong("matsim.recording.bufferMiB",AppDefaults.Recording.BUFFER_MIB))) * 1024 * 1024;
+        return Math.min(requested,Math.min(runtime.maxMemory()/AppDefaults.Recording.HEAP_BUDGET_DIVISOR,available/AppDefaults.Recording.AVAILABLE_BUDGET_DIVISOR));
     }
     // Reserve a spill slot BEFORE allocating another image, limiting queued full-size images to two.
     boolean reserve(int width,int height) throws IOException {
         if(failure!=null)throw failure;
         long bytes=4L*width*height;
-        if(retainedBytes+bytes<=Math.max(0,budget-2*bytes))return true;
+        if(retainedBytes+bytes<=Math.max(0,budget-AppDefaults.Recording.SPILL_QUEUE_FRAMES*bytes))return true;
         try { pending.acquire(); } catch(InterruptedException e) {Thread.currentThread().interrupt();throw new IOException("Interrupted while buffering frames",e);}
         if(failure!=null){pending.release();throw failure;}
         return false;

@@ -1,5 +1,6 @@
 package com.matsim.viz.ui.fx;
 
+import com.matsim.viz.config.AppDefaults;
 import com.matsim.viz.config.AppConfig;
 import com.matsim.viz.domain.ColorMode;
 import com.matsim.viz.domain.VehicleShape;
@@ -8,9 +9,11 @@ import com.matsim.viz.engine.SimulationModel;
 import com.matsim.viz.ui.NetworkPanel;
 import com.matsim.viz.ui.PanelVideoRecorder;
 import com.matsim.viz.ui.map.OsmBackground;
+import com.matsim.viz.ui.map.MapStyle;
 import com.matsim.viz.ui.TimeFormat;
 import com.matsim.viz.ui.editor.NetworkEditorPanel;
 import com.matsim.viz.ui.editor.TransitEditorPane;
+import com.matsim.viz.parser.DetailedNetworkGeometry;
 import javafx.animation.AnimationTimer;
 import javafx.application.Application;
 import javafx.application.Platform;
@@ -30,6 +33,7 @@ import javafx.scene.control.ComboBox;
 import javafx.scene.control.Label;
 import javafx.scene.control.ScrollPane;
 import javafx.scene.control.Slider;
+import javafx.scene.control.Spinner;
 import javafx.scene.control.TextField;
 import javafx.scene.control.TitledPane;
 import javafx.scene.control.TreeItem;
@@ -69,7 +73,7 @@ import java.util.function.Supplier;
 public final class FxVisualizerApp extends Application {
     private static SimulationModel startupModel;
     private static PlaybackController startupPlaybackController;
-    private static double startupSampleSize = 1.0;
+    private static double startupSampleSize = AppDefaults.Display.SAMPLE_SIZE;
     private static Path startupCacheDir;
     private static AppConfig startupAppConfig;
 
@@ -126,7 +130,7 @@ public final class FxVisualizerApp extends Application {
         PlaybackController playbackController = startupPlaybackController;
 
         NetworkPanel networkPanel = getOnEdt(() -> new NetworkPanel(model, playbackController));
-        runOnEdt(() -> networkPanel.setPreferredSize(new Dimension(1200, 800)));
+        runOnEdt(() -> networkPanel.setPreferredSize(new Dimension(AppDefaults.Window.NETWORK_WIDTH, AppDefaults.Window.NETWORK_HEIGHT)));
         runOnEdt(() -> networkPanel.setSampleSize(startupSampleSize));
         applyStartupDefaults(networkPanel);
         heatmapPreprocessExecutor = Executors.newSingleThreadExecutor(r -> {
@@ -135,7 +139,7 @@ public final class FxVisualizerApp extends Application {
             return thread;
         });
 
-        Path recordDir = startupCacheDir != null ? startupCacheDir : Path.of("cache");
+        Path recordDir = startupCacheDir != null ? startupCacheDir : Path.of(AppDefaults.Paths.CACHE_DIR);
         videoRecorder = new PanelVideoRecorder(recordDir);
 
         SwingNode swingNode = new SwingNode();
@@ -151,14 +155,14 @@ public final class FxVisualizerApp extends Application {
         root.setCenter(swingNode);
         root.setRight(sidePanel.root());
 
-        Scene scene = new Scene(root, 1540, 980);
-        scene.getStylesheets().add(DARK_CSS);
+        Scene scene = new Scene(root, AppDefaults.Window.WIDTH, AppDefaults.Window.HEIGHT);
+        scene.getStylesheets().add(getOnEdt(networkPanel::isDarkTheme) ? DARK_CSS : LIGHT_CSS);
         this.mainScene = scene;
 
         stage.setTitle("MATSim Visualizer - JavaFX");
         stage.setScene(scene);
-        stage.setMinWidth(1180);
-        stage.setMinHeight(760);
+        stage.setMinWidth(AppDefaults.Window.MIN_WIDTH);
+        stage.setMinHeight(AppDefaults.Window.MIN_HEIGHT);
         stage.show();
 
         AnimationTimer animation = createAnimationTimer(playbackController, networkPanel, topBar.uiState());
@@ -446,14 +450,17 @@ public final class FxVisualizerApp extends Application {
         );
 
         final boolean[] syncing = {false};
+        final double[] pendingSeek = {Double.NaN};
         timeSlider.valueProperty().addListener((obs, oldValue, newValue) -> {
             if (syncing[0]) {
                 return;
             }
-            playbackController.seek(newValue.doubleValue());
+            // Only apply the latest drag position once per animation pulse.
+            pendingSeek[0] = newValue.doubleValue();
+            timeValue.setText(TimeFormat.hhmmss(pendingSeek[0]));
         });
 
-        PlaybackUiState uiState = new PlaybackUiState(playPauseButton, timeSlider, timeValue, syncing);
+        PlaybackUiState uiState = new PlaybackUiState(playPauseButton, timeSlider, timeValue, syncing, pendingSeek, recordButton);
         wrapper.getChildren().add(controls);
         return new TopBarBundle(wrapper, uiState);
     }
@@ -509,29 +516,33 @@ public final class FxVisualizerApp extends Application {
         TitledPane networkModesCard = buildModeSelectionCard(
                 "Network Modes",
                 model.availableLinkModes(),
-            defaultTransportModes(model.availableLinkModes()),
+            model.defaultTransportModes(model.availableLinkModes()),
+                model::isPublicTransportMode,
                 selected -> runOnEdt(() -> networkPanel.setSelectedLinkModes(selected))
         );
 
         TitledPane tripModesCard = buildModeSelectionCard(
                 "Trip Modes",
                 model.availableTripModes(),
-            defaultTransportModes(model.availableTripModes()),
+            model.defaultTransportModes(model.availableTripModes()),
+                model::isPublicTransportMode,
                 selected -> runOnEdt(() -> networkPanel.setSelectedTripModes(selected))
         );
 
         TitledPane heatmapTripModesCard = buildModeSelectionCard(
             "Heatmap Shown Modes",
             model.availableTripModes(),
-            defaultTransportModes(model.availableTripModes()),
-            selected -> runOnEdt(() -> networkPanel.setSelectedHeatmapTripModes(selected))
+            model.defaultTransportModes(model.availableTripModes()),
+            model::isPublicTransportMode,
+                selected -> runOnEdt(() -> networkPanel.setSelectedHeatmapTripModes(selected))
         );
 
         TitledPane ptStopModesCard = buildModeSelectionCard(
             "PT Stop Modes",
             model.availablePtStopModes(),
-            defaultTransportModes(model.availablePtStopModes()),
-            selected -> runOnEdt(() -> networkPanel.setSelectedPtStopModes(selected))
+            model.defaultTransportModes(model.availablePtStopModes()),
+            model::isPublicTransportMode,
+                selected -> runOnEdt(() -> networkPanel.setSelectedPtStopModes(selected))
         );
 
         Button preprocessButton = new Button("Apply Bin + Preprocess");
@@ -590,7 +601,7 @@ public final class FxVisualizerApp extends Application {
         Map<Node, Node> sectionHeaders = new LinkedHashMap<>();
         for (Node child : content.getChildren()) {
             if (child instanceof TitledPane pane) {
-                pane.setExpanded(false);
+                pane.setExpanded(AppDefaults.Display.SECTIONS_EXPANDED);
                 pane.getStyleClass().remove("card");
                 sections.add(pane);
             } else if (child instanceof VBox card && card.getChildren().get(0) instanceof Label title) {
@@ -598,7 +609,7 @@ public final class FxVisualizerApp extends Application {
                 card.getStyleClass().remove("card");
                 card.setPadding(new Insets(10));
                 TitledPane pane = new TitledPane(title.getText(), card);
-                pane.setExpanded(false);
+                pane.setExpanded(AppDefaults.Display.SECTIONS_EXPANDED);
                 sectionHeaders.put(card, pane);
                 sections.add(pane);
             }
@@ -680,7 +691,7 @@ public final class FxVisualizerApp extends Application {
         TextField start = new TextField(Double.toString(getOnEdt(panel::getDetailStartLanePixels)));
         TextField full = new TextField(Double.toString(getOnEdt(panel::getDetailFullLanePixels)));
         TextField coverage = new TextField(Double.toString(getOnEdt(panel::getOverviewVehicleCoverage)));
-        Label coverageHint = new Label("Overview vehicle coverage: 0.2 to 0.9. Lower values leave larger gaps; default 0.75.");
+        Label coverageHint = new Label("Overview vehicle coverage: 0.2 to 0.9. Lower values leave larger gaps; default " + AppDefaults.Display.OVERVIEW_VEHICLE_COVERAGE + ".");
         coverageHint.setWrapText(true);
         Label status = new Label();
         status.setWrapText(true);
@@ -703,10 +714,13 @@ public final class FxVisualizerApp extends Application {
 
     private VBox buildMapBackgroundCard(NetworkPanel panel) {
         VBox card = createCard("Map Background");
-        CheckBox enabled = new CheckBox("Add OpenStreetMap background");
+        CheckBox enabled = new CheckBox("Add map background");
+        ComboBox<MapStyle> style = new ComboBox<>(FXCollections.observableArrayList(MapStyle.values()));
+        style.setValue(AppDefaults.Maps.STYLE);
+        style.setMaxWidth(Double.MAX_VALUE);
         Label caption = new Label("Network CRS");
         caption.getStyleClass().add("field-caption");
-        TextField crs = new TextField(startupAppConfig == null ? "EPSG:2056" : startupAppConfig.uiMapCrs());
+        TextField crs = new TextField(startupAppConfig == null ? AppDefaults.Maps.CRS : startupAppConfig.uiMapCrs());
         crs.setPromptText("EPSG:2056");
         Button apply = new Button("Apply CRS");
         Label status = new Label("Use the CRS of your simulation. Map tiles need an internet connection.");
@@ -721,12 +735,14 @@ public final class FxVisualizerApp extends Application {
                 return;
             }
             String requestedCrs = crs.getText();
+            MapStyle requestedStyle = style.getValue();
+            style.setDisable(true);
             enabled.setDisable(true);
             apply.setDisable(true);
             crs.setDisable(true);
             status.setText("Preparing map projection...");
-            Path cache = startupCacheDir == null ? Path.of("cache") : startupCacheDir;
-            java.util.concurrent.CompletableFuture.supplyAsync(() -> new OsmBackground(requestedCrs, cache))
+            Path cache = startupCacheDir == null ? Path.of(AppDefaults.Paths.CACHE_DIR) : startupCacheDir;
+            java.util.concurrent.CompletableFuture.supplyAsync(() -> new OsmBackground(requestedCrs, cache, requestedStyle))
                     .whenComplete((background, error) -> Platform.runLater(() -> {
                         try {
                             if (error != null) throw new IllegalArgumentException(error.getCause() == null
@@ -741,6 +757,7 @@ public final class FxVisualizerApp extends Application {
                             while (cause.getCause() != null) cause = cause.getCause();
                             status.setText("Map unchanged: " + cause.getMessage());
                         } finally {
+                            style.setDisable(false);
                             enabled.setDisable(false);
                             apply.setDisable(false);
                             crs.setDisable(false);
@@ -748,9 +765,10 @@ public final class FxVisualizerApp extends Application {
                     }));
         };
         enabled.setOnAction(event -> update.run());
+        style.setOnAction(event -> { if (enabled.isSelected()) update.run(); });
         apply.setOnAction(event -> { enabled.setSelected(true); update.run(); });
         crs.setOnAction(event -> { enabled.setSelected(true); update.run(); });
-        card.getChildren().addAll(enabled, caption, crs, apply, status, credit);
+        card.getChildren().addAll(enabled, new Label("Map style"), style, caption, crs, apply, status, credit);
         if (startupAppConfig != null && startupAppConfig.uiMapBackground()) {
             enabled.setSelected(true);
             update.run();
@@ -777,7 +795,7 @@ public final class FxVisualizerApp extends Application {
         BorderPane loadingRoot = new BorderPane(loading);
         loadingRoot.getStyleClass().add("app-root");
         mainScene.setRoot(loadingRoot);
-        Path editorCacheDir = startupCacheDir != null ? startupCacheDir : Path.of("cache");
+        Path editorCacheDir = startupCacheDir != null ? startupCacheDir : Path.of(AppDefaults.Paths.CACHE_DIR);
         CompletableFuture.supplyAsync(() -> NetworkEditorPanel.prepare(model.networkData(), mainNetworkPanel.sharedSpatialIndex()))
                 .whenComplete((prepared, error) -> Platform.runLater(() -> {
                     editorLoading = false;
@@ -834,6 +852,7 @@ public final class FxVisualizerApp extends Application {
                 "Network Modes",
                 availableEditorModes,
                 initiallyVisibleModes,
+                startupModel::isPublicTransportMode,
                 selected -> runOnEdt(() -> editorPanel.setVisibleLinkModes(selected))
         );
 
@@ -974,7 +993,14 @@ public final class FxVisualizerApp extends Application {
                     }));
         });
 
-        CheckBox editorMapToggle = new CheckBox("Add OpenStreetMap background");
+        CheckBox editorMapToggle = new CheckBox("Add map background");
+        ComboBox<MapStyle> editorMapStyle = new ComboBox<>(FXCollections.observableArrayList(MapStyle.values()));
+        editorMapStyle.setValue(AppDefaults.Maps.STYLE);
+        editorMapStyle.setMaxWidth(Double.MAX_VALUE);
+        editorMapStyle.setOnAction(e -> {
+            MapStyle selected = editorMapStyle.getValue();
+            runOnEdt(() -> editorPanel.setMapStyle(selected));
+        });
         editorMapToggle.setOnAction(e -> runOnEdt(() -> editorPanel.setMapBackgroundEnabled(editorMapToggle.isSelected())));
         Label mapHint = new Label();
         mapHint.getStyleClass().add("hint");
@@ -991,12 +1017,12 @@ public final class FxVisualizerApp extends Application {
         refreshMapHint.run();
 
         TitledPane attributesSection = new TitledPane("Selected element attributes", attributesTree);
-        attributesSection.setExpanded(false);
+        attributesSection.setExpanded(AppDefaults.Display.SECTIONS_EXPANDED);
         TitledPane colorsSection = new TitledPane("Network colours", editorColorsCard);
-        colorsSection.setExpanded(false);
-        TitledPane mapSection = new TitledPane("Map background", new VBox(8, editorMapToggle, crsCaption, crsCombo, mapHint));
-        mapSection.setExpanded(false);
-        editorLinkModesCard.setExpanded(false);
+        colorsSection.setExpanded(AppDefaults.Display.SECTIONS_EXPANDED);
+        TitledPane mapSection = new TitledPane("Map background", new VBox(8, editorMapToggle, new Label("Map style"), editorMapStyle, crsCaption, crsCombo, mapHint));
+        mapSection.setExpanded(AppDefaults.Display.SECTIONS_EXPANDED);
+        editorLinkModesCard.setExpanded(AppDefaults.Display.SECTIONS_EXPANDED);
         editorLinkModesCard.getStyleClass().remove("card");
         VBox inspector = new VBox(10, selectedType, selectedId, selectedMeta,
                 editLinkButton, reverseLinkButton, createNodeButton, createLinkButton,
@@ -1008,7 +1034,7 @@ public final class FxVisualizerApp extends Application {
             runOnEdt(()->editorPanel.setEditingLocked(locked));
         });
         TitledPane transitSection=new TitledPane("Public transport lines and schedules",transitEditor);
-        transitSection.setExpanded(false);
+        transitSection.setExpanded(AppDefaults.Display.SECTIONS_EXPANDED);
         transitSection.expandedProperty().addListener((obs,old,expanded)->{if(expanded)transitEditor.loadDefaultFiles();});
         inspector.getChildren().add(0,transitSection);
         inspector.setPadding(new Insets(12));
@@ -1146,7 +1172,7 @@ public final class FxVisualizerApp extends Application {
 
     private static TreeItem<String> treeKV(String key, String value) {
         TreeItem<String> node = new TreeItem<>(key);
-        node.setExpanded(false);
+        node.setExpanded(AppDefaults.Display.SECTIONS_EXPANDED);
         node.getChildren().add(new TreeItem<>(value == null ? "" : value));
         return node;
     }
@@ -1213,9 +1239,54 @@ public final class FxVisualizerApp extends Application {
             offsetSlider,
             offsetValue,
             laneWidthCaption, laneWidthSlider, laneWidthValue,
+            buildDetailedGeometryControls(model,networkPanel),
             colorSettingsButton
         );
         return card;
+    }
+
+    private VBox buildDetailedGeometryControls(SimulationModel model,NetworkPanel panel) {
+        CheckBox enabled=new CheckBox("Use detailed link geometry (CSV)");enabled.setDisable(true);
+        Label status=new Label("Looking for *detailed_network.csv beside the MATSim config...");status.setWrapText(true);status.getStyleClass().add("hint");
+        VBox box=new VBox(6,enabled,status);
+        enabled.setOnAction(e->runOnEdt(()->panel.setDetailedGeometryEnabled(enabled.isSelected())));
+        CompletableFuture.supplyAsync(()->{
+            try{return DetailedNetworkGeometry.discover(startupAppConfig==null?null:startupAppConfig.matsimConfigFile());}
+            catch(Exception ex){throw new java.util.concurrent.CompletionException(ex);}
+        }).whenComplete((files,error)->Platform.runLater(()->{
+            if(applicationClosing)return;
+            if(error!=null){status.setText("Geometry discovery failed: "+error.getCause().getMessage());return;}
+            if(files.isEmpty()){status.setText("No detailed_network.csv found beside the MATSim config.");return;}
+            ComboBox<Path> choice=new ComboBox<>(FXCollections.observableArrayList(files));choice.setMaxWidth(Double.MAX_VALUE);
+            choice.setConverter(new javafx.util.StringConverter<>(){
+                public String toString(Path p){return p==null?"":p.getFileName().toString();}
+                public Path fromString(String text){return null;}
+            });
+            if(files.size()>1)box.getChildren().add(1,choice);
+            java.util.function.Consumer<Path> load=file->{
+                enabled.setSelected(false);enabled.setDisable(true);choice.setDisable(true);
+                runOnEdt(()->panel.setDetailedGeometry(null));status.setText("Reading "+file.getFileName()+" in the background...");
+                CompletableFuture.supplyAsync(()->{
+                    try{return DetailedNetworkGeometry.load(file,model.networkData());}
+                    catch(Exception ex){throw new java.util.concurrent.CompletionException(ex);}
+                }).whenComplete((geometry,failure)->Platform.runLater(()->{
+                    if(applicationClosing)return;
+                    choice.setDisable(false);
+                    if(failure!=null){status.setText("Cannot load geometry: "+failure.getCause().getMessage());return;}
+                    boolean available=geometry.size()>0;
+                    runOnEdt(()->{
+                        panel.setDetailedGeometry(geometry);
+                        panel.setDetailedGeometryEnabled(available && AppDefaults.Geometry.ENABLED_WHEN_AVAILABLE);
+                    });
+                    enabled.setSelected(available && AppDefaults.Geometry.ENABLED_WHEN_AVAILABLE);
+                    enabled.setDisable(geometry.size()==0);
+                    status.setText(file.getFileName()+": "+geometry.summary()+(geometry.size()==0?" Check IDs and that CSV coordinates use the network CRS.":" Uncheck above to show straight links."));
+                }));
+            };
+            choice.valueProperty().addListener((obs,old,file)->{if(file!=null)load.accept(file);});
+            choice.getSelectionModel().selectFirst();
+        }));
+        return box;
     }
 
     private VBox buildHeatmapSettingsCard(NetworkPanel networkPanel, Button preprocessButton) {
@@ -1269,11 +1340,30 @@ public final class FxVisualizerApp extends Application {
             requestHeatmapPreprocessing(networkPanel, true);
         });
 
-        Label hint = new Label("Default is 10 minutes. Higher values smooth out short-term spikes.");
+        Label hint = new Label("Default is " + (AppDefaults.Heatmap.TIME_BIN_SECONDS / 60.0) + " minutes. Higher values smooth out short-term spikes.");
         hint.getStyleClass().add("hint");
         hint.setWrapText(true);
 
+        Spinner<Double> minWidth = new Spinner<>(AppDefaults.Heatmap.VOLUME_WIDTH_CONTROL_MIN_PX,
+                AppDefaults.Heatmap.VOLUME_WIDTH_CONTROL_MAX_PX, getOnEdt(networkPanel::getVolumeMinWidthPixels),
+                AppDefaults.Heatmap.VOLUME_WIDTH_CONTROL_STEP_PX);
+        Spinner<Double> maxWidth = new Spinner<>(AppDefaults.Heatmap.VOLUME_WIDTH_CONTROL_MIN_PX,
+                AppDefaults.Heatmap.VOLUME_WIDTH_CONTROL_MAX_PX, getOnEdt(networkPanel::getVolumeMaxWidthPixels),
+                AppDefaults.Heatmap.VOLUME_WIDTH_CONTROL_STEP_PX);
+        minWidth.setMaxWidth(Double.MAX_VALUE); maxWidth.setMaxWidth(Double.MAX_VALUE);
+        minWidth.valueProperty().addListener((obs, old, value) -> {
+            if (value > maxWidth.getValue()) maxWidth.getValueFactory().setValue(value);
+            double maximum = maxWidth.getValue(); runOnEdt(() -> networkPanel.setVolumeWidthPixels(value, maximum));
+        });
+        maxWidth.valueProperty().addListener((obs, old, value) -> {
+            if (value < minWidth.getValue()) minWidth.getValueFactory().setValue(value);
+            double minimum = minWidth.getValue(); runOnEdt(() -> networkPanel.setVolumeWidthPixels(minimum, value));
+        });
+        Label widthHint = new Label("Road and PT volume: thickness follows the colour scale and fades smoothly between bins. Changes apply immediately.");
+        widthHint.setWrapText(true); widthHint.getStyleClass().add("hint");
         card.getChildren().addAll(binCaption, binSlider, binInputRow, binValue, stagedHint, preprocessButton, hint);
+        card.getChildren().addAll(new Label("Minimum volume thickness (px)"), minWidth,
+                new Label("Maximum volume thickness (px)"), maxWidth, widthHint);
         return card;
     }
 
@@ -1437,7 +1527,7 @@ public final class FxVisualizerApp extends Application {
         paramArea.getStyleClass().add("card");
 
         ComboBox<String> vehicleSelector = new ComboBox<>(FXCollections.observableArrayList(
-                "Car", "Bike", "Truck", "Bus", "Rail / Tram"));
+                "Car", "Bike", "Truck", "Bus", "Rail / Tram", "Ferry"));
         vehicleSelector.setValue("Car");
         vehicleSelector.setMaxWidth(Double.MAX_VALUE);
 
@@ -1501,6 +1591,14 @@ public final class FxVisualizerApp extends Application {
                     lengthSlider.valueProperty().addListener((o, ov, nv) -> runOnEdt(() -> networkPanel.setBusVehicleLengthMeters(nv.doubleValue())));
                     widthSlider = new Slider(0.10, 2.00, getOnEdt(networkPanel::getBusVehicleWidthRatio));
                     widthSlider.valueProperty().addListener((o, ov, nv) -> runOnEdt(() -> networkPanel.setBusVehicleWidthRatio(nv.doubleValue())));
+                }
+                case "Ferry" -> {
+                    shapeCombo.setValue(getOnEdt(networkPanel::getFerryShape));
+                    shapeCombo.valueProperty().addListener((o, ov, nv) -> { if (nv != null) runOnEdt(() -> networkPanel.setFerryShape(nv)); });
+                    lengthSlider = new Slider(5, AppDefaults.Vehicles.MAX_FERRY_LENGTH_M, getOnEdt(networkPanel::getFerryVehicleLengthMeters));
+                    lengthSlider.valueProperty().addListener((o, ov, nv) -> runOnEdt(() -> networkPanel.setFerryVehicleLengthMeters(nv.doubleValue())));
+                    widthSlider = new Slider(0.10, 2.00, getOnEdt(networkPanel::getFerryVehicleWidthRatio));
+                    widthSlider.valueProperty().addListener((o, ov, nv) -> runOnEdt(() -> networkPanel.setFerryVehicleWidthRatio(nv.doubleValue())));
                 }
                 default -> { // Rail / Tram
                     shapeCombo.setValue(getOnEdt(networkPanel::getRailShape));
@@ -1694,18 +1792,22 @@ public final class FxVisualizerApp extends Application {
             String title,
             List<String> modes,
             Set<String> defaultSelected,
+            java.util.function.Predicate<String> isPublicTransport,
             Consumer<Set<String>> onSelectionChanged
     ) {
         VBox body = new VBox(4);
         body.getStyleClass().add("rows");
         body.setPadding(new Insets(6));
 
-        HBox header = new HBox(8);
+        FlowPane header = new FlowPane(8, 6);
         Button allButton = new Button("All");
         Button noneButton = new Button("None");
+        Button ptButton = new Button("Public transport");
+        ptButton.getStyleClass().add("ghost-button");
+        ptButton.setMinWidth(Region.USE_PREF_SIZE);
         allButton.getStyleClass().add("ghost-button");
         noneButton.getStyleClass().add("ghost-button");
-        header.getChildren().addAll(allButton, noneButton);
+        header.getChildren().addAll(allButton, noneButton, ptButton);
 
         VBox checks = new VBox(4);
         checks.getStyleClass().add("rows");
@@ -1728,12 +1830,16 @@ public final class FxVisualizerApp extends Application {
             publishSelections(boxes, onSelectionChanged);
         });
 
+        ptButton.setOnAction(e -> {
+            boxes.forEach((mode, box) -> box.setSelected(isPublicTransport.test(mode)));
+            publishSelections(boxes, onSelectionChanged);
+        });
         publishSelections(boxes, onSelectionChanged);
 
         body.getChildren().addAll(header, checks);
 
         TitledPane titledPane = new TitledPane(title, body);
-        titledPane.setExpanded(false);
+        titledPane.setExpanded(AppDefaults.Display.SECTIONS_EXPANDED);
         titledPane.setAnimated(true);
         titledPane.getStyleClass().add("card");
         return titledPane;
@@ -1889,7 +1995,7 @@ public final class FxVisualizerApp extends Application {
         runOnEdt(() -> {
             networkPanel.setDarkTheme(config.uiDarkTheme());
             networkPanel.setColorMode(parseColorModeDefault());
-            networkPanel.setVisualizationMode(parseVisualizationMode(config.uiVisualizationMode(), NetworkPanel.VisualizationMode.VEHICLES));
+            networkPanel.setVisualizationMode(parseVisualizationMode(config.uiVisualizationMode(), NetworkPanel.VisualizationMode.valueOf(AppDefaults.Display.VISUALIZATION_MODE)));
             networkPanel.setShowQueues(config.uiShowQueues());
             networkPanel.setBidirectionalOffset(config.uiBidirectionalOffset());
             networkPanel.setLaneWidthMeters(config.uiLaneWidthMeters());
@@ -1912,6 +2018,9 @@ public final class FxVisualizerApp extends Application {
             networkPanel.setTruckVehicleLengthMeters(config.uiVehicleLengthTruckMeters());
             networkPanel.setBusVehicleLengthMeters(config.uiVehicleLengthBusMeters());
             networkPanel.setRailVehicleLengthMeters(config.uiVehicleLengthRailMeters());
+            networkPanel.setFerryVehicleLengthMeters(config.uiVehicleLengthFerryMeters());
+            networkPanel.setFerryVehicleWidthRatio(config.uiVehicleWidthRatioFerry());
+            networkPanel.setFerryShape(parseVehicleShape(config.uiVehicleShapeFerry(), VehicleShape.valueOf(AppDefaults.Vehicles.SHAPE_FERRY)));
 
             networkPanel.setCarLikeVehicleWidthRatio(config.uiVehicleWidthRatioCar());
             networkPanel.setBikeVehicleWidthRatio(config.uiVehicleWidthRatioBike());
@@ -1919,28 +2028,28 @@ public final class FxVisualizerApp extends Application {
             networkPanel.setBusVehicleWidthRatio(config.uiVehicleWidthRatioBus());
             networkPanel.setRailVehicleWidthRatio(config.uiVehicleWidthRatioRail());
 
-            networkPanel.setCarShape(parseVehicleShape(config.uiVehicleShapeCar(), VehicleShape.RECTANGLE));
-            networkPanel.setBikeShape(parseVehicleShape(config.uiVehicleShapeBike(), VehicleShape.DIAMOND));
-            networkPanel.setTruckShape(parseVehicleShape(config.uiVehicleShapeTruck(), VehicleShape.RECTANGLE));
-            networkPanel.setBusShape(parseVehicleShape(config.uiVehicleShapeBus(), VehicleShape.OVAL));
-            networkPanel.setRailShape(parseVehicleShape(config.uiVehicleShapeRail(), VehicleShape.ARROW));
+            networkPanel.setCarShape(parseVehicleShape(config.uiVehicleShapeCar(), VehicleShape.valueOf(AppDefaults.Vehicles.SHAPE_CAR)));
+            networkPanel.setBikeShape(parseVehicleShape(config.uiVehicleShapeBike(), VehicleShape.valueOf(AppDefaults.Vehicles.SHAPE_BIKE)));
+            networkPanel.setTruckShape(parseVehicleShape(config.uiVehicleShapeTruck(), VehicleShape.valueOf(AppDefaults.Vehicles.SHAPE_TRUCK)));
+            networkPanel.setBusShape(parseVehicleShape(config.uiVehicleShapeBus(), VehicleShape.valueOf(AppDefaults.Vehicles.SHAPE_BUS)));
+            networkPanel.setRailShape(parseVehicleShape(config.uiVehicleShapeRail(), VehicleShape.valueOf(AppDefaults.Vehicles.SHAPE_RAIL)));
         });
     }
 
     private ColorMode parseColorModeDefault() {
         AppConfig config = startupAppConfig;
         if (config == null) {
-            return ColorMode.DEFAULT;
+            return ColorMode.valueOf(AppDefaults.Display.COLOR_MODE);
         }
-        return parseColorMode(config.uiColorMode(), ColorMode.DEFAULT);
+        return parseColorMode(config.uiColorMode(), ColorMode.valueOf(AppDefaults.Display.COLOR_MODE));
     }
 
     private PanelVideoRecorder.Quality parseRecordingQualityDefault() {
         AppConfig config = startupAppConfig;
         if (config == null) {
-            return PanelVideoRecorder.Quality.PRESENTATION_4K;
+            return PanelVideoRecorder.Quality.valueOf(AppDefaults.Recording.DEFAULT_QUALITY);
         }
-        return parseRecordingQuality(config.recordingDefaultQuality(), PanelVideoRecorder.Quality.PRESENTATION_4K);
+        return parseRecordingQuality(config.recordingDefaultQuality(), PanelVideoRecorder.Quality.valueOf(AppDefaults.Recording.DEFAULT_QUALITY));
     }
 
     private static ColorMode parseColorMode(String raw, ColorMode fallback) {
@@ -2136,6 +2245,14 @@ public final class FxVisualizerApp extends Application {
 
             @Override
             public void handle(long now) {
+                if (videoRecorder.isEncoding()) uiState.recordButton().setText(videoRecorder.encodingStatus());
+                if (!Double.isNaN(uiState.pendingSeek()[0]) && !presentationFramePending.get()) {
+                    double target = uiState.pendingSeek()[0]; uiState.pendingSeek()[0] = Double.NaN;
+                    playbackController.seek(target);
+                    previousNanos = now;
+                    runOnEdt(networkPanel::repaint);
+                    return;
+                }
                 if (editorActive || editorLoading) { previousNanos = now; return; }
                 if (previousNanos < 0) {
                     previousNanos = now;
@@ -2162,7 +2279,7 @@ public final class FxVisualizerApp extends Application {
                         } finally {
                             Platform.runLater(() -> {
                                 uiState.syncing()[0] = true;
-                                uiState.timeSlider().setValue(playbackController.getCurrentTime());
+                                if (!uiState.timeSlider().isValueChanging()) uiState.timeSlider().setValue(playbackController.getCurrentTime());
                                 uiState.syncing()[0] = false;
                                 uiState.timeValue().setText(TimeFormat.hhmmss(playbackController.getCurrentTime()));
                                 uiState.playPauseButton().setText(playbackController.isPlaying() ? "Pause" : "Play");
@@ -2183,7 +2300,7 @@ public final class FxVisualizerApp extends Application {
                 playbackController.tick(Math.min(0.20, Math.max(0.001, deltaSeconds)));
 
                 uiState.syncing()[0] = true;
-                uiState.timeSlider().setValue(playbackController.getCurrentTime());
+                if (!uiState.timeSlider().isValueChanging()) uiState.timeSlider().setValue(playbackController.getCurrentTime());
                 uiState.syncing()[0] = false;
                 uiState.timeValue().setText(TimeFormat.hhmmss(playbackController.getCurrentTime()));
                 uiState.playPauseButton().setText(playbackController.isPlaying() ? "Pause" : "Play");
@@ -2222,23 +2339,6 @@ public final class FxVisualizerApp extends Application {
 
     private static String formatSpeed(double speed) {
         return "x" + Math.max(1, (int) Math.round(speed));
-    }
-
-    private static Set<String> defaultTransportModes(List<String> availableModes) {
-        Set<String> selected = new LinkedHashSet<>();
-        Set<String> defaults = Set.of("car", "bike", "truck", "bus", "tram");
-        for (String mode : availableModes) {
-            String normalized = normalizeMode(mode);
-            if (defaults.contains(normalized)) {
-                selected.add(normalized);
-            }
-        }
-        if (selected.isEmpty()) {
-            for (String mode : availableModes) {
-                selected.add(normalizeMode(mode));
-            }
-        }
-        return selected;
     }
 
     private static String normalizeMode(String mode) {
@@ -2335,7 +2435,7 @@ public final class FxVisualizerApp extends Application {
     private record TopBarBundle(VBox root, PlaybackUiState uiState) {
     }
 
-    private record PlaybackUiState(Button playPauseButton, Slider timeSlider, Label timeValue, boolean[] syncing) {
+    private record PlaybackUiState(Button playPauseButton, Slider timeSlider, Label timeValue, boolean[] syncing, double[] pendingSeek, Button recordButton) {
     }
 
     private record DisplayScreenOption(String label, Screen screen) {

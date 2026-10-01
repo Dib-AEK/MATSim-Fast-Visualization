@@ -1,5 +1,7 @@
 package com.matsim.viz.engine;
 
+import com.matsim.viz.config.AppDefaults;
+
 import com.matsim.viz.domain.NetworkData;
 import com.matsim.viz.domain.PtStopInteraction;
 import com.matsim.viz.domain.PtStopPoint;
@@ -29,6 +31,10 @@ public final class SimulationModel {
     private final double[] traversalEnterTimes;
     private final double[] traversalLeaveTimes;
     private final double[] traversalInverseDurations;
+    private final int[] traversalByEnter;
+    private final double[] subtreeLatestLeave;
+    private final int[] previousTraversal;
+    private final int[] nextTraversal;
 
     private final double[] transitionTimes;
     private final int[] transitionTraversalIndexes;
@@ -43,6 +49,7 @@ public final class SimulationModel {
     private final List<String> availableLinkModes;
     private final List<String> availableTripModes;
     private final List<String> availablePtStopModes;
+    private final Set<String> publicTransportModes;
     private final List<String> availableTripPurposes;
     private final List<String> availableSexCategories;
 
@@ -92,6 +99,36 @@ public final class SimulationModel {
         this.transitionTraversalIndexes = transitionArrays.traversalIndexes();
         this.transitionLinkIds = transitionArrays.linkIds();
         this.transitionEnters = transitionArrays.enters();
+        this.traversalByEnter = new int[count];
+        this.subtreeLatestLeave = new double[count];
+        int ordered = 0;
+        for (int event = 0; event < transitionTraversalIndexes.length; event++) {
+            if (transitionEnters[event]) traversalByEnter[ordered++] = transitionTraversalIndexes[event];
+        }
+        indexLatestLeave(0, count);
+        this.previousTraversal = new int[count];
+        this.nextTraversal = new int[count];
+        java.util.Arrays.fill(previousTraversal, -1);
+        java.util.Arrays.fill(nextTraversal, -1);
+        // Reuse time-sorted transitions: no second sort or per-frame vehicle-history scan.
+        Map<String, Integer> lastByVehicle = new java.util.HashMap<>();
+        for (int event = 0; event < transitionTraversalIndexes.length; event++) {
+            if (!transitionEnters[event]) continue;
+            int current = transitionTraversalIndexes[event];
+            Integer previous = lastByVehicle.put(traversalVehicleIds[current], current);
+            if (previous == null) continue;
+            var from = networkData.getLinks().get(traversalLinkIds[previous]);
+            var to = networkData.getLinks().get(traversalLinkIds[current]);
+            if (from != null && to != null && !from.id().equals(to.id())
+                    && from.toNodeId().equals(to.fromNodeId())
+                    && Math.abs(traversalLeaveTimes[previous] - traversalEnterTimes[current])
+                        <= AppDefaults.Motion.CONTIGUOUS_TIME_TOLERANCE_SECONDS
+                    && traversalLeaveTimes[previous] > traversalEnterTimes[previous]
+                    && traversalLeaveTimes[current] > traversalEnterTimes[current]) {
+                nextTraversal[previous] = current;
+                previousTraversal[current] = previous;
+            }
+        }
 
         int stopInteractionCount = ptStopInteractions == null ? 0 : ptStopInteractions.length;
         this.ptStopInteractionStopIds = new String[stopInteractionCount];
@@ -109,6 +146,9 @@ public final class SimulationModel {
         this.availableLinkModes = Collections.unmodifiableList(extractLinkModes(networkData));
         this.availableTripModes = Collections.unmodifiableList(extractTripModes(vehicleToMode));
         this.availablePtStopModes = Collections.unmodifiableList(extractPtStopModes(this.ptStopInteractionModes, this.ptStopsById));
+        Set<String> ptModes = new LinkedHashSet<>(AppDefaults.Transit.MODES);
+        this.availablePtStopModes.forEach(mode -> ptModes.add(normalizeMode(mode).trim()));
+        this.publicTransportModes = Set.copyOf(ptModes);
         this.availableTripPurposes = Collections.unmodifiableList(
             extractTripPurposes(metadataByPerson, this.tripPurposeWindowsByPerson)
         );
@@ -125,6 +165,23 @@ public final class SimulationModel {
 
     public NetworkData networkData() {
         return networkData;
+    }
+
+    public boolean isPublicTransportMode(String mode) {
+        return mode != null && publicTransportModes.contains(normalizeMode(mode).trim());
+    }
+
+    /** Existing road defaults plus every standard or scenario-defined transit mode. */
+    public Set<String> defaultTransportModes(List<String> availableModes) {
+        Set<String> selected = new LinkedHashSet<>();
+        for (String mode : availableModes) {
+            String normalized = normalizeMode(mode).trim();
+            if (AppDefaults.Display.TRANSPORT_MODES.contains(normalized) || isPublicTransportMode(normalized)) {
+                selected.add(normalized);
+            }
+        }
+        if (selected.isEmpty()) availableModes.forEach(mode -> selected.add(normalizeMode(mode).trim()));
+        return selected;
     }
 
     public Map<String, String> vehicleToPerson() {
@@ -171,6 +228,42 @@ public final class SimulationModel {
     public int traversalCount() {
         return traversalVehicleIds.length;
     }
+
+    // Implicit balanced interval tree: primitive arrays, built once from the existing event order.
+    private double indexLatestLeave(int lo, int hi) {
+        if (lo >= hi) return Double.NEGATIVE_INFINITY;
+        int mid = (lo + hi) >>> 1;
+        return subtreeLatestLeave[mid] = Math.max(traversalLeaveTimes[traversalByEnter[mid]],
+                Math.max(indexLatestLeave(lo, mid), indexLatestLeave(mid + 1, hi)));
+    }
+
+    public void forEachActiveTraversal(double time, java.util.function.IntConsumer visitor) {
+        visitActive(0, traversalByEnter.length, time, visitor);
+    }
+
+    private void visitActive(int lo, int hi, double time, java.util.function.IntConsumer visitor) {
+        if (lo >= hi) return;
+        int mid = (lo + hi) >>> 1;
+        if (subtreeLatestLeave[mid] <= time) return;
+        visitActive(lo, mid, time, visitor);
+        int index = traversalByEnter[mid];
+        if (traversalEnterTimes[index] > time) return;
+        if (traversalLeaveTimes[index] > time) visitor.accept(index);
+        visitActive(mid + 1, hi, time, visitor);
+    }
+
+    public int firstTransitionAfter(double time) {
+        int lo = 0, hi = transitionTimes.length;
+        while (lo < hi) {
+            int mid = (lo + hi) >>> 1;
+            if (transitionTimes[mid] <= time) lo = mid + 1;
+            else hi = mid;
+        }
+        return lo;
+    }
+
+    public int previousTraversal(int index) { return previousTraversal[index]; }
+    public int nextTraversal(int index) { return nextTraversal[index]; }
 
     public String traversalVehicleId(int index) {
         return traversalVehicleIds[index];

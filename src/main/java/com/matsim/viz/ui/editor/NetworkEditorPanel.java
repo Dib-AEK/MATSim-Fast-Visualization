@@ -1,11 +1,13 @@
 package com.matsim.viz.ui.editor;
 
+import com.matsim.viz.config.AppDefaults;
 import com.matsim.viz.domain.LinkSegment;
 import com.matsim.viz.ui.SpatialGrid;
 import java.awt.image.BufferedImage;
 import java.util.ArrayDeque;
 import java.util.concurrent.CompletableFuture;
 import com.matsim.viz.ui.map.OsmBackground;
+import com.matsim.viz.ui.map.MapStyle;
 import com.matsim.viz.domain.NetworkData;
 import com.matsim.viz.domain.NodePoint;
 import org.matsim.api.core.v01.Coord;
@@ -78,13 +80,6 @@ public final class NetworkEditorPanel extends JPanel {
         void onSelectionChanged(NodePoint selectedNode, LinkSegment selectedLink);
     }
 
-    private static final Color BACKGROUND = new Color(0x0F1115);
-    private static final Color LINK_COLOR = new Color(0x808A9D);
-    private static final Color NODE_COLOR_DEFAULT = new Color(0xC7CEDD);
-    private static final Color SELECTED_LINK = new Color(0xF05D23);
-    private static final Color SELECTED_NODE = new Color(0x1FA2FF);
-    private static final double VIEWPORT_MARGIN_PIXELS = 80.0;
-    private static final double BIDIRECTIONAL_OFFSET_PIXELS = 3.2;
 
     private final Map<String, NodePoint> nodes;
     private final Map<String, LinkSegment> links;
@@ -110,15 +105,15 @@ public final class NetworkEditorPanel extends JPanel {
     private double maxX;
     private double maxY;
     private double baseScale = 1.0;
-    private double zoom = 1.0;
-    private double panX = 20.0;
-    private double panY = 20.0;
+    private double zoom = AppDefaults.Camera.INITIAL_ZOOM;
+    private double panX = AppDefaults.Camera.INITIAL_PAN_PIXELS;
+    private double panY = AppDefaults.Camera.INITIAL_PAN_PIXELS;
     private boolean fitInitialized;
     private Point panDragStart;
 
     private CoordinateSystem coordinateSystem;
-    private Color linkColor = LINK_COLOR;
-    private Color nodeColor = NODE_COLOR_DEFAULT;
+    private Color linkColor = AppDefaults.Editor.LINK_COLOR;
+    private Color nodeColor = AppDefaults.Editor.NODE_COLOR_DEFAULT;
 
     public record PreparedNetwork(NetworkData data, Map<String, NodePoint> nodes,
             Map<String, LinkSegment> links, Set<String> directions, Set<String> modes,
@@ -151,11 +146,10 @@ public final class NetworkEditorPanel extends JPanel {
     private long mapGeneration;
     private BufferedImage drawingCache;
     private String drawingKey;
-    private static final int CACHE_MARGIN = 256;
     private double cachePanX, cachePanY, cacheZoom;
     private Point pressPoint;
     private boolean dragMoved, zoomSettling;
-    private final javax.swing.Timer zoomTimer = new javax.swing.Timer(120, e -> {
+    private final javax.swing.Timer zoomTimer = new javax.swing.Timer(AppDefaults.Camera.EDITOR_ZOOM_SETTLE_MS, e -> {
         zoomSettling = false; repaint();
     });
 
@@ -165,7 +159,7 @@ public final class NetworkEditorPanel extends JPanel {
 
     public NetworkEditorPanel(PreparedNetwork prepared, Path cacheDir) {
 
-        this.mapCacheDir = (cacheDir == null ? Path.of("cache") : cacheDir).toAbsolutePath().normalize();
+        this.mapCacheDir = (cacheDir == null ? Path.of(AppDefaults.Paths.CACHE_DIR) : cacheDir).toAbsolutePath().normalize();
         this.mutationWorker = Executors.newSingleThreadExecutor(runnable -> {
             Thread thread = new Thread(runnable, "network-editor-worker");
             thread.setDaemon(true);
@@ -178,11 +172,11 @@ public final class NetworkEditorPanel extends JPanel {
         spatialIndex = prepared.spatialIndex(); extraNodes = prepared.orphanNodes();
         minX = prepared.data().getMinX(); minY = prepared.data().getMinY();
         maxX = prepared.data().getMaxX(); maxY = prepared.data().getMaxY();
-        this.coordinateSystem = CoordinateSystem.EPSG_2056;
+        this.coordinateSystem = CoordinateSystem.valueOf(AppDefaults.Maps.CRS.replace(':', '_'));
 
         zoomTimer.setRepeats(false);
-        setPreferredSize(new Dimension(1200, 850));
-        setBackground(BACKGROUND);
+        setPreferredSize(new Dimension(AppDefaults.Window.EDITOR_WIDTH, AppDefaults.Window.EDITOR_HEIGHT));
+        setBackground(AppDefaults.Editor.BACKGROUND);
 
         MouseAdapter mouse = new MouseAdapter() {
             @Override
@@ -258,8 +252,8 @@ public final class NetworkEditorPanel extends JPanel {
                 ensureFitted();
                 zoomSettling = true; zoomTimer.restart();
                 Point2D.Double anchorWorld = screenToWorld(e.getX(), e.getY());
-                double factor = Math.pow(1.15, -e.getPreciseWheelRotation());
-                zoom = Math.max(0.05, Math.min(Math.max(2048, 24 / baseScale), zoom * factor));
+                double factor = Math.pow(AppDefaults.Camera.WHEEL_FACTOR, -e.getPreciseWheelRotation());
+                zoom = Math.max(AppDefaults.Camera.MIN_ZOOM, Math.min(Math.max(AppDefaults.Camera.MAX_ZOOM, AppDefaults.Camera.MAX_PIXELS_PER_METER / baseScale), zoom * factor));
 
                 Point2D.Double after = worldToScreen(anchorWorld.x, anchorWorld.y);
                 panX += e.getX() - after.x;
@@ -304,7 +298,7 @@ public final class NetworkEditorPanel extends JPanel {
         if (!showTransit) return;
         for (TransitPath path:transitPaths) {
             boolean chosen=path.line().equals(highlightedLine);
-            g.setColor(chosen ? new Color(0xFFBC42) : new Color(80,180,240,110));
+            g.setColor(chosen ? AppDefaults.Colors.SELECTED_TRANSIT_LINE : new Color(80,180,240,110));
             g.setStroke(new BasicStroke(chosen?4f:1.5f,BasicStroke.CAP_ROUND,BasicStroke.JOIN_ROUND));
             for (String id:path.links()) {
                 LinkSegment link=links.get(id); if(link==null)continue;
@@ -316,9 +310,9 @@ public final class NetworkEditorPanel extends JPanel {
                 int index=0;
                 for(TransitStopMarker stop:path.stops()) {
                     var p=worldToScreen(stop.x(),stop.y());index++;
-                    if(p.x < -CACHE_MARGIN || p.y < -CACHE_MARGIN || p.x > getWidth()+CACHE_MARGIN || p.y > getHeight()+CACHE_MARGIN)continue;
+                    if(p.x < -AppDefaults.Editor.CACHE_MARGIN || p.y < -AppDefaults.Editor.CACHE_MARGIN || p.x > getWidth()+AppDefaults.Editor.CACHE_MARGIN || p.y > getHeight()+AppDefaults.Editor.CACHE_MARGIN)continue;
                     g.setColor(Color.WHITE);g.fillOval((int)p.x-5,(int)p.y-5,10,10);
-                    g.setColor(new Color(0xEF7B26));g.drawOval((int)p.x-5,(int)p.y-5,10,10);
+                    g.setColor(AppDefaults.Colors.TRANSIT_STOP);g.drawOval((int)p.x-5,(int)p.y-5,10,10);
                     g.drawString(index+" "+(stop.name()==null?stop.id():stop.name()),(int)p.x+8,(int)p.y-8);
                 }
             }
@@ -365,7 +359,7 @@ public final class NetworkEditorPanel extends JPanel {
     }
 
     public void setCoordinateSystem(CoordinateSystem coordinateSystem) {
-        this.coordinateSystem = coordinateSystem == null ? CoordinateSystem.EPSG_2056 : coordinateSystem;
+        this.coordinateSystem = coordinateSystem == null ? CoordinateSystem.valueOf(AppDefaults.Maps.CRS.replace(':', '_')) : coordinateSystem;
         prepareMap();
         drawingCache = null;
         repaint();
@@ -376,15 +370,23 @@ public final class NetworkEditorPanel extends JPanel {
         prepareMap();
     }
 
+    private MapStyle mapStyle = AppDefaults.Maps.STYLE;
+
+    public void setMapStyle(MapStyle style) {
+        mapStyle = java.util.Objects.requireNonNull(style);
+        prepareMap();
+    }
+
     private void prepareMap() {
         long generation = ++mapGeneration;
         if (osmBackground != null) osmBackground.close();
         osmBackground = null; drawingCache = null;
         CoordinateSystem crs = resolvedCoordinateSystem();
+        MapStyle requestedStyle = mapStyle;
         if (!mapEnabled || crs == CoordinateSystem.NONE || disposed) { repaint(); return; }
         mutationWorker.submit(() -> {
             try {
-                OsmBackground map = new OsmBackground(crs == CoordinateSystem.EPSG_2056 ? "EPSG:2056" : "EPSG:4326", mapCacheDir);
+                OsmBackground map = new OsmBackground(crs == CoordinateSystem.EPSG_2056 ? "EPSG:2056" : "EPSG:4326", mapCacheDir, requestedStyle);
                 SwingUtilities.invokeLater(() -> {
                     if (disposed || generation != mapGeneration) { map.close(); return; }
                     osmBackground = map; drawingCache = null; repaint();
@@ -468,7 +470,7 @@ public final class NetworkEditorPanel extends JPanel {
                 throw new IllegalArgumentException("Invalid coordinates at node " + node.id());
         }
         for (LinkSegment link : links.values()) {
-            validateNumbers(link.length(), link.freeSpeed(), link.lanes(), Double.parseDouble(link.attributes().getOrDefault("capacity", "900")));
+            validateNumbers(link.length(), link.freeSpeed(), link.lanes(), Double.parseDouble(link.attributes().getOrDefault("capacity", Double.toString(AppDefaults.Editor.LINK_CAPACITY))));
             if (!nodes.containsKey(link.fromNodeId()) || !nodes.containsKey(link.toNodeId()))
                 throw new IllegalArgumentException("Link " + link.id() + " refers to a missing node");
         }
@@ -489,7 +491,7 @@ public final class NetworkEditorPanel extends JPanel {
                 continue;
             }
 
-            double capacity = parseDouble(link.attributes().get("capacity"), 900.0);
+            double capacity = parseDouble(link.attributes().get("capacity"), AppDefaults.Editor.LINK_CAPACITY);
             Link matsimLink = NetworkUtils.createAndAddLink(
                     network,
                     Id.createLinkId(link.id()),
@@ -534,7 +536,7 @@ public final class NetworkEditorPanel extends JPanel {
 
     private void remember(Runnable backwards, Runnable forwards) {
         undo.addLast(new Edit(backwards, forwards));
-        if (undo.size() > 50) undo.removeFirst();
+        if (undo.size() > AppDefaults.Editor.UNDO_LIMIT) undo.removeFirst();
         redo.clear(); unsavedChanges = true; drawingCache = null;
     }
 
@@ -575,7 +577,7 @@ public final class NetworkEditorPanel extends JPanel {
             visibleLinkModes.addAll(selected.allowedModes());
             x = (selected.fromX()+selected.toX())/2; y = (selected.fromY()+selected.toY())/2;
         }
-        zoom = Math.max(zoom, Math.min(2048, 2 / baseScale));
+        zoom = Math.max(zoom, Math.min(AppDefaults.Camera.MAX_ZOOM, 2 / baseScale));
         panX = getWidth()/2.0 - (x-minX)*baseScale*zoom;
         panY = getHeight()/2.0 - (y-minY)*baseScale*zoom;
         notifySelectionChanged(); repaint(); return true;
@@ -697,7 +699,7 @@ public final class NetworkEditorPanel extends JPanel {
         }
 
         LinkSegment existing = links.get(selectedLinkId);
-        String initialCapacity = existing.attributes().getOrDefault("capacity", "900.0");
+        String initialCapacity = existing.attributes().getOrDefault("capacity", Double.toString(AppDefaults.Editor.LINK_CAPACITY));
         JTextField lengthField = new JTextField(String.format(Locale.ROOT, "%.2f", existing.length()));
         JTextField freeSpeedField = new JTextField(String.format(Locale.ROOT, "%.6f", existing.freeSpeed() * 3.6));
         JTextField lanesField = new JTextField(String.format(Locale.ROOT, "%.3f", existing.lanes()));
@@ -820,7 +822,7 @@ public final class NetworkEditorPanel extends JPanel {
         String key = getWidth()+":"+getHeight()+":"+baseScale
                 +":"+selectedLinkId+":"+selectedNodeId+":"+visibleLinkModes.hashCode()+":"+linkColor+":"+nodeColor;
         if (drawingCache != null && key.equals(drawingKey)
-                && ((cacheZoom == zoom && Math.abs(panX-cachePanX) <= CACHE_MARGIN && Math.abs(panY-cachePanY) <= CACHE_MARGIN)
+                && ((cacheZoom == zoom && Math.abs(panX-cachePanX) <= AppDefaults.Editor.CACHE_MARGIN && Math.abs(panY-cachePanY) <= AppDefaults.Editor.CACHE_MARGIN)
                     || zoomSettling)) {
             drawCachedView((Graphics2D) g);
             drawModeStatus((Graphics2D) g);
@@ -828,14 +830,14 @@ public final class NetworkEditorPanel extends JPanel {
         }
         drawingKey = key;
         cachePanX = panX; cachePanY = panY; cacheZoom = zoom;
-        drawingCache = new BufferedImage(getWidth()+2*CACHE_MARGIN, getHeight()+2*CACHE_MARGIN, BufferedImage.TYPE_INT_RGB);
+        drawingCache = new BufferedImage(getWidth()+2*AppDefaults.Editor.CACHE_MARGIN, getHeight()+2*AppDefaults.Editor.CACHE_MARGIN, BufferedImage.TYPE_INT_RGB);
         Graphics2D g2 = drawingCache.createGraphics();
         g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-        g2.setColor(BACKGROUND);
+        g2.setColor(AppDefaults.Editor.BACKGROUND);
         g2.fillRect(0, 0, drawingCache.getWidth(), drawingCache.getHeight());
-        g2.translate(CACHE_MARGIN, CACHE_MARGIN);
+        g2.translate(AppDefaults.Editor.CACHE_MARGIN, AppDefaults.Editor.CACHE_MARGIN);
 
-        ViewportBounds viewportBounds = computeViewportBounds(VIEWPORT_MARGIN_PIXELS + CACHE_MARGIN);
+        ViewportBounds viewportBounds = computeViewportBounds(AppDefaults.Editor.VIEWPORT_MARGIN_PIXELS + AppDefaults.Editor.CACHE_MARGIN);
         Map<String, Double> nodeWidthCaps = new HashMap<>();
 
         if (resolvedCoordinateSystem() != CoordinateSystem.NONE) {
@@ -861,7 +863,7 @@ public final class NetworkEditorPanel extends JPanel {
         double ratio = zoom/cacheZoom;
         g.translate(panX-ratio*cachePanX, getHeight()*(1-ratio)+ratio*cachePanY-panY);
         g.scale(ratio,ratio);
-        g.drawImage(drawingCache,-CACHE_MARGIN,-CACHE_MARGIN,null);
+        g.drawImage(drawingCache,-AppDefaults.Editor.CACHE_MARGIN,-AppDefaults.Editor.CACHE_MARGIN,null);
         g.dispose();
         if (osmBackground != null) osmBackground.drawAttribution(graphics,getWidth(),getHeight());
     }
@@ -869,10 +871,10 @@ public final class NetworkEditorPanel extends JPanel {
     private void drawOsmBackground(Graphics2D g2) {
         if (mapEnabled && osmBackground != null) {
             Graphics2D mapGraphics = (Graphics2D) g2.create();
-            mapGraphics.translate(-CACHE_MARGIN,-CACHE_MARGIN);
-            osmBackground.draw(mapGraphics, getWidth()+2*CACHE_MARGIN, getHeight()+2*CACHE_MARGIN,
-                    (x,y)->screenToWorld(x-CACHE_MARGIN,y-CACHE_MARGIN),
-                    (x,y)-> { var point=worldToScreen(x,y); return new Point2D.Double(point.x+CACHE_MARGIN,point.y+CACHE_MARGIN); },
+            mapGraphics.translate(-AppDefaults.Editor.CACHE_MARGIN,-AppDefaults.Editor.CACHE_MARGIN);
+            osmBackground.draw(mapGraphics, getWidth()+2*AppDefaults.Editor.CACHE_MARGIN, getHeight()+2*AppDefaults.Editor.CACHE_MARGIN,
+                    (x,y)->screenToWorld(x-AppDefaults.Editor.CACHE_MARGIN,y-AppDefaults.Editor.CACHE_MARGIN),
+                    (x,y)-> { var point=worldToScreen(x,y); return new Point2D.Double(point.x+AppDefaults.Editor.CACHE_MARGIN,point.y+AppDefaults.Editor.CACHE_MARGIN); },
                     () -> { drawingCache = null; repaint(); });
             mapGraphics.dispose();
         }
@@ -896,8 +898,8 @@ public final class NetworkEditorPanel extends JPanel {
             Point2D.Double to = worldToScreen(link.toX(), link.toY());
             double strokeWidth = linkStrokeWidth(link);
             double offsetSign = bidirectionalOffsetSign(link);
-            Point2D.Double shiftedFrom = applyPerpendicularOffset(from, to, offsetSign * Math.min(BIDIRECTIONAL_OFFSET_PIXELS, baseScale * zoom * 3.5));
-            Point2D.Double shiftedTo = applyPerpendicularOffset(to, from, -offsetSign * Math.min(BIDIRECTIONAL_OFFSET_PIXELS, baseScale * zoom * 3.5));
+            Point2D.Double shiftedFrom = applyPerpendicularOffset(from, to, offsetSign * Math.min(AppDefaults.Editor.BIDIRECTIONAL_OFFSET_PIXELS, baseScale * zoom * AppDefaults.Display.LANE_WIDTH_M));
+            Point2D.Double shiftedTo = applyPerpendicularOffset(to, from, -offsetSign * Math.min(AppDefaults.Editor.BIDIRECTIONAL_OFFSET_PIXELS, baseScale * zoom * AppDefaults.Display.LANE_WIDTH_M));
             renderedPickLinks.add(new PickableLink(link.id(), shiftedFrom.x, shiftedFrom.y, shiftedTo.x, shiftedTo.y));
 
             viewportNodes.add(link.fromNodeId()); viewportNodes.add(link.toNodeId());
@@ -905,7 +907,7 @@ public final class NetworkEditorPanel extends JPanel {
             nodeWidthCaps.merge(link.toNodeId(), strokeWidth, Math::max);
 
             if (link.id().equals(selectedLinkId)) {
-                g2.setColor(SELECTED_LINK);
+                g2.setColor(AppDefaults.Editor.SELECTED_LINK);
                 g2.setStroke(new BasicStroke((float) (strokeWidth + 1.3), BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
                 g2.drawLine((int) Math.round(shiftedFrom.x), (int) Math.round(shiftedFrom.y), (int) Math.round(shiftedTo.x), (int) Math.round(shiftedTo.y));
                 drawSelectedLinkFlow(g2, shiftedFrom, shiftedTo);
@@ -923,7 +925,7 @@ public final class NetworkEditorPanel extends JPanel {
         double t = Math.max(0.1, Math.min(0.9,
                 ((getWidth()/2.0-from.x)*dx+(getHeight()/2.0-from.y)*dy)/(length*length)));
         double x=from.x+t*dx, y=from.y+t*dy, ux=dx/length, uy=dy/length;
-        g2.setColor(new Color(0x55E4FF)); g2.setStroke(new BasicStroke(2));
+        g2.setColor(AppDefaults.Colors.EDITED_LINK); g2.setStroke(new BasicStroke(2));
         for (int side : new int[]{-1,1})
             g2.draw(new java.awt.geom.Line2D.Double(x-ux*10-uy*5*side, y-uy*10+ux*5*side, x, y));
     }
@@ -948,7 +950,7 @@ public final class NetworkEditorPanel extends JPanel {
             double linkWidthCap = Math.max(1.0, nodeWidthCaps.getOrDefault(node.id(), 2.2));
             double preferredRadius = selected ? linkWidthCap * 0.95 : (pending ? linkWidthCap * 0.75 : linkWidthCap * 0.55);
             double radius = Math.max(0.9, Math.min(linkWidthCap, preferredRadius));
-            g2.setColor(selected ? SELECTED_NODE : (pending ? new Color(0xFFD166) : nodeColor));
+            g2.setColor(selected ? AppDefaults.Editor.SELECTED_NODE : (pending ? AppDefaults.Colors.PENDING_NODE : nodeColor));
             g2.fillOval(
                     (int) Math.round(p.x - radius),
                     (int) Math.round(p.y - radius),
@@ -957,7 +959,7 @@ public final class NetworkEditorPanel extends JPanel {
             );
 
             if (selected || pending) {
-                g2.setColor(new Color(0xE5ECF8));
+                g2.setColor(AppDefaults.Colors.EDITOR_LABEL);
                 g2.setFont(g2.getFont().deriveFont(Font.PLAIN, 11f));
                 g2.drawString(node.id(), (int) Math.round(p.x + 6), (int) Math.round(p.y - 6));
             }
@@ -980,7 +982,7 @@ public final class NetworkEditorPanel extends JPanel {
 
         g2.setColor(new Color(0, 0, 0, 170));
         g2.fillRoundRect(12, 12, 330, 30, 10, 10);
-        g2.setColor(new Color(0xECF2FF));
+        g2.setColor(AppDefaults.Colors.EDITOR_STATUS);
         g2.drawString(text, 22, 32);
     }
 
@@ -1072,10 +1074,10 @@ public final class NetworkEditorPanel extends JPanel {
 
         JTextField idField = new JTextField();
         JTextField lengthField = new JTextField(String.format(Locale.ROOT, "%.2f", defaultLength));
-        JTextField freeSpeedField = new JTextField("50.0");
-        JTextField lanesField = new JTextField("1.0");
-        JTextField modesField = new JTextField("car");
-        JTextField capacityField = new JTextField("900.0");
+        JTextField freeSpeedField = new JTextField(Double.toString(AppDefaults.Editor.LINK_SPEED_KMH));
+        JTextField lanesField = new JTextField(Double.toString(AppDefaults.Editor.LINK_LANES));
+        JTextField modesField = new JTextField(AppDefaults.Editor.LINK_MODE);
+        JTextField capacityField = new JTextField(Double.toString(AppDefaults.Editor.LINK_CAPACITY));
         JTextField typeField = new JTextField("");
         JTextArea customAttrs = new JTextArea(5, 28);
         customAttrs.setText("name=\nallowed_turns=");
@@ -1267,9 +1269,9 @@ public final class NetworkEditorPanel extends JPanel {
         double sy = (getHeight() - 40.0) / height;
         baseScale = Math.max(0.000001, Math.min(sx, sy));
 
-        zoom = 1.0;
-        panX = 20.0;
-        panY = 20.0;
+        zoom = AppDefaults.Camera.INITIAL_ZOOM;
+        panX = AppDefaults.Camera.INITIAL_PAN_PIXELS;
+        panY = AppDefaults.Camera.INITIAL_PAN_PIXELS;
         fitInitialized = true;
     }
 
@@ -1407,7 +1409,7 @@ public final class NetworkEditorPanel extends JPanel {
 
     private double linkStrokeWidth(LinkSegment link) {
         double lanes = Math.max(0.1, link.lanes());
-        return Math.max(0.65, Math.min(6.2, 3.5 * baseScale * zoom * lanes));
+        return Math.max(0.65, Math.min(6.2, AppDefaults.Display.LANE_WIDTH_M * baseScale * zoom * lanes));
     }
 
     private double bidirectionalOffsetSign(LinkSegment link) {

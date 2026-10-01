@@ -33,7 +33,8 @@ flowchart TD
 
 ### `com.matsim.viz.config`
 - `ConfigLoader`: Parses `config/app.properties`.
-- `AppConfig`: Typed app-level defaults (playback, rendering, UI, recording).
+- `AppDefaults`: Single source of built-in defaults in static nested sections, including rendering, maps, recording, editor and palettes.
+- `AppConfig`: Typed effective configuration after applying property overrides to `AppDefaults`.
 
 ### `com.matsim.viz.parser`
 - `MatsimScenarioLoader`: Resolves network/population/events/trips from MATSim config + output directory.
@@ -54,7 +55,7 @@ flowchart TD
 - `ui/map/OsmTileCache`: Bounded asynchronous tile cache shared with the network editor.
 - `SpatialGrid`: World-space uniform grid index for visible-link queries.
 - `VehicleColorProvider`: Color strategies (mode/purpose/age/sex).
-- `PanelVideoRecorder`: Frame capture queue + deferred lossless encoding.
+- `PanelVideoRecorder`: Frame capture with bounded lossless RAM/PNG storage, followed by H.264 MP4 encoding (`RecordingFrameStore`, `H264Mp4Encoder`).
 
 ### `com.matsim.viz.ui.fx`
 - `FxVisualizerApp`: JavaFX shell, controls, settings windows, Swing embedding of `NetworkPanel`.
@@ -84,7 +85,7 @@ flowchart TD
 
 ### Change playback/time behavior
 - `PlaybackController` for ticking, seeking, active state.
-- `Main` + `AppConfig` for defaults (`playback.*`).
+- `AppDefaults.Playback` for defaults (`playback.*`), overridden through `ConfigLoader` / `AppConfig`.
 
 ### Change rendering performance/visuals
 - `NetworkPanel` for map/vehicle drawing logic.

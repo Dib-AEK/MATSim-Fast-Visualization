@@ -45,6 +45,27 @@ public final class MapBackgroundCheck {
         Path tilePath = cache.resolve("osm-tiles/2/2/1.png");
         Files.createDirectories(tilePath.getParent());
         ImageIO.write(tile, "png", tilePath.toFile());
+        for (MapStyle style : MapStyle.values()) {
+            try (OsmTileCache tiles = new OsmTileCache(cache, style)) {
+                CountDownLatch ready = new CountDownLatch(1);
+                tiles.getTile(2, 2, 1, ready::countDown);
+                check(ready.await(5, TimeUnit.SECONDS), "Styled disk tile did not load: " + style);
+                BufferedImage styled = tiles.getTile(2, 2, 1, () -> {});
+                check(styled != null, "Styled tile missing: " + style);
+                Color color = new Color(styled.getRGB(240, 240));
+                if (style == MapStyle.OPENSTREETMAP) {
+                    check(styled.getRGB(240, 240) == tile.getRGB(240, 240), "Original OSM colors changed");
+                } else {
+                    check(color.getRed() == color.getGreen() && color.getRed() == color.getBlue(),
+                            "Monochrome map still has colors");
+                    check(style == MapStyle.LIGHT ? color.getRed() > 220 : color.getRed() < 55,
+                            "Incorrect light/dark palette");
+                }
+                ImageIO.write(styled, "png", cache.resolve("style-" + style.name() + ".png").toFile());
+            }
+        }
+        check(ImageIO.read(tilePath.toFile()).getRGB(240, 240) == tile.getRGB(240, 240),
+                "Changing map styles modified the shared disk cache");
         // Disk-hit completion must release in-flight state and notify the Swing renderer.
         try (OsmTileCache tiles = new OsmTileCache(cache)) {
             CountDownLatch ready = new CountDownLatch(1);
@@ -97,11 +118,30 @@ public final class MapBackgroundCheck {
                 Color mapPixel = new Color(recorded.getRGB(100, 150));
                 check(mapPixel.getRed() > 50 && mapPixel.getGreen() > 50,
                         "The network layer hid the map background");
+                try {
+                    var roadField = NetworkPanel.class.getDeclaredField("cachedRoadLayer"); roadField.setAccessible(true);
+                    var dirty = NetworkPanel.class.getDeclaredField("mapTilesDirty"); dirty.setAccessible(true);
+                    Object roads = roadField.get(panel);
+                    dirty.setBoolean(panel, true);
+                    Graphics2D refresh = recorded.createGraphics(); panel.paintRecordingFrame(refresh, 448, 448); refresh.dispose();
+                    check(roadField.get(panel) == roads, "A tile arrival rebuilt the road layer");
+                    var mapField = NetworkPanel.class.getDeclaredField("cachedNetworkLayer"); mapField.setAccessible(true);
+                    BufferedImage mapImage = (BufferedImage) mapField.get(panel);
+                    int[] before = mapImage.getRGB(0,0,mapImage.getWidth(),mapImage.getHeight(),null,0,mapImage.getWidth());
+                    var panX = NetworkPanel.class.getDeclaredField("panX"); panX.setAccessible(true);
+                    var panY = NetworkPanel.class.getDeclaredField("panY"); panY.setAccessible(true);
+                    panX.setDouble(panel,panX.getDouble(panel)+15); panY.setDouble(panel,panY.getDouble(panel)-9);
+                    var refreshMap = NetworkPanel.class.getDeclaredMethod("refreshMapLayer"); refreshMap.setAccessible(true); refreshMap.invoke(panel);
+                    check(java.util.Arrays.equals(before,mapImage.getRGB(0,0,mapImage.getWidth(),mapImage.getHeight(),null,0,mapImage.getWidth())),
+                            "Tile refresh shifted the cached camera while panning");
+                    var projectionField = OsmBackground.class.getDeclaredField("projectedTiles"); projectionField.setAccessible(true);
+                    check(!((Map<?,?>)projectionField.get(background)).isEmpty(), "Projected tile geometry was not cached");
+                } catch (ReflectiveOperationException ex) { throw new AssertionError(ex); }
                 panel.setOsmBackground(null);
                 check(!panel.isMapBackgroundEnabled(), "Map toggle did not clear background");
             });
             ImageIO.write(recorded, "png", cache.resolve("map-recording-preview.png").toFile());
         }
-        System.out.println("PASS: EPSG:2056 round trip, EPSG:4326 axes, CRS validation, disk cache and tile reprojection. " + cache);
+        System.out.println("PASS: all three map styles, unchanged shared disk cache, EPSG:2056 round trip, EPSG:4326 axes, CRS validation tile reprojection, road-layer reuse and stable cached camera. " + cache);
     }
 }

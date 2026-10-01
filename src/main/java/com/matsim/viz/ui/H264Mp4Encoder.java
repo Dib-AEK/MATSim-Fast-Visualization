@@ -1,5 +1,6 @@
 package com.matsim.viz.ui;
 
+import com.matsim.viz.config.AppDefaults;
 import org.jcodec.codecs.h264.H264Encoder;
 import org.jcodec.codecs.h264.encode.RateControl;
 import org.jcodec.codecs.h264.io.model.SeqParameterSet;
@@ -27,9 +28,12 @@ final class H264Mp4Encoder {
         encode(output,fps,frames.size(),index->ImageIO.read(frames.get(index).toFile()));
     }
     static void encode(Path output, int fps, int count, FrameReader frames) throws IOException {
+        encode(output, fps, count, frames, ignored -> { });
+    }
+    static void encode(Path output, int fps, int count, FrameReader frames, java.util.function.IntConsumer progress) throws IOException {
         // Fixed QP 18 prioritizes fine road/vehicle detail over a small file size.
         H264Encoder encoder = new H264Encoder(new RateControl() {
-            public int startPicture(Size size, int maxSize, SliceType type) { return 18; }
+            public int startPicture(Size size, int maxSize, SliceType type) { return AppDefaults.Recording.H264_QP; }
             public int initialQpDelta() { return 0; }
             public int accept(int bits) { return 0; }
         }) {
@@ -78,6 +82,7 @@ final class H264Mp4Encoder {
                     track.addFrame(Packet.createPacket(NIOUtils.clone(encoded.getData()), frameNumber,
                             fps, 1, frameNumber, encoded.isKeyFrame() ? Packet.FrameType.KEY : Packet.FrameType.INTER, null));
                     frameNumber++;
+                    progress.accept(frameNumber);
                 } finally {
                     frame.flush();
                 }

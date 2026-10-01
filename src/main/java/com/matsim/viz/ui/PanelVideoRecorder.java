@@ -1,5 +1,6 @@
 package com.matsim.viz.ui;
 
+import com.matsim.viz.config.AppDefaults;
 import java.awt.DisplayMode;
 import java.awt.GraphicsDevice;
 import java.awt.GraphicsEnvironment;
@@ -17,26 +18,26 @@ import java.util.concurrent.Executors;
 public final class PanelVideoRecorder {
 
     public enum Quality {
-        PRESENTATION_4K("Presentation 4K / 15 fps", 3840, 2160, 15),
-        VIEWPORT_SYNC("Viewport native (app sync)", 0, 0, 0),
-        MEDIUM("720p 30fps", 1280, 720, 30),
-        HIGH("1080p 30fps", 1920, 1080, 30),
-        HIGH_60("1080p 60fps", 1920, 1080, 60),
-        QHD("1440p 30fps", 2560, 1440, 30),
-        QHD_60("1440p 60fps", 2560, 1440, 60),
-        UHD("4K 30fps", 3840, 2160, 30),
-        UHD_60("4K 60fps", 3840, 2160, 60);
+        PRESENTATION_4K(AppDefaults.Recording.PRESENTATION_4K),
+        VIEWPORT_SYNC(AppDefaults.Recording.VIEWPORT_SYNC),
+        MEDIUM(AppDefaults.Recording.MEDIUM),
+        HIGH(AppDefaults.Recording.HIGH),
+        HIGH_60(AppDefaults.Recording.HIGH_60),
+        QHD(AppDefaults.Recording.QHD),
+        QHD_60(AppDefaults.Recording.QHD_60),
+        UHD(AppDefaults.Recording.UHD),
+        UHD_60(AppDefaults.Recording.UHD_60);
 
         private final String label;
         private final int width;
         private final int height;
         private final int fps;
 
-        Quality(String label, int width, int height, int fps) {
-            this.label = label;
-            this.width = width;
-            this.height = height;
-            this.fps = fps;
+        Quality(AppDefaults.VideoPreset preset) {
+            this.label = preset.label();
+            this.width = preset.width();
+            this.height = preset.height();
+            this.fps = preset.fps();
         }
 
         public String label() { return label; }
@@ -64,6 +65,8 @@ public final class PanelVideoRecorder {
 
     private volatile boolean recording;
     private volatile boolean encoding;
+    private volatile int encodedFrames;
+    private volatile String encoderName = "";
     private volatile Path currentFile;
     private volatile Quality quality;
     private volatile long frameCount;
@@ -98,6 +101,8 @@ public final class PanelVideoRecorder {
 
             this.quality = quality;
             this.frameCount = 0;
+            this.encodedFrames = 0;
+            this.encoderName = "";
             this.recordingFps = quality.isViewportNative()
                     ? detectDisplayRefreshRate()
                     : Math.max(1, quality.fps());
@@ -213,7 +218,14 @@ public final class PanelVideoRecorder {
                     Files.deleteIfExists(spool);
                     return null;
                 }
-                H264Mp4Encoder.encode(outputPath,fps,framesToEncode.size(),framesToEncode::read);
+                encoderName = "Detecting encoder";
+                String nativeEncoder = FfmpegVideoEncoder.encode(outputPath, fps, framesToEncode.size(),
+                        framesToEncode::read, value -> encodedFrames = value);
+                if (nativeEncoder == null) {
+                    encoderName = "JCodec CPU";
+                    H264Mp4Encoder.encode(outputPath, fps, framesToEncode.size(), framesToEncode::read,
+                            value -> encodedFrames = value);
+                } else encoderName = nativeEncoder;
                 // Delete only files created by this recording, after a successful encode.
                 framesToEncode.cleanup();
                 System.out.printf("Video saved: %s (%d frames, %d fps, H.264 MP4)\n",
@@ -253,6 +265,10 @@ public final class PanelVideoRecorder {
         return recording;
     }
 
+    public String encodingStatus() {
+        return encoding ? "Encoding " + encodedFrames + "/" + frameCount + " frames" : encoderName;
+    }
+
     public boolean isEncoding() {
         return encoding;
     }
@@ -277,8 +293,8 @@ public final class PanelVideoRecorder {
                 targetWidth = evenDimension(panelWidth);
                 targetHeight = evenDimension(panelHeight);
             } else {
-                targetWidth = quality == null ? 1280 : quality.width();
-                targetHeight = quality == null ? 720 : quality.height();
+                targetWidth = quality == null ? AppDefaults.Recording.MEDIUM.width() : quality.width();
+                targetHeight = quality == null ? AppDefaults.Recording.MEDIUM.height() : quality.height();
             }
         }
 
@@ -296,11 +312,11 @@ public final class PanelVideoRecorder {
             DisplayMode mode = device.getDisplayMode();
             int rate = mode == null ? 0 : mode.getRefreshRate();
             if (rate == DisplayMode.REFRESH_RATE_UNKNOWN || rate <= 0) {
-                return 60;
+                return AppDefaults.Recording.FALLBACK_DISPLAY_FPS;
             }
             return Math.max(30, Math.min(240, rate));
         } catch (Throwable ignored) {
-            return 60;
+            return AppDefaults.Recording.FALLBACK_DISPLAY_FPS;
         }
     }
 }

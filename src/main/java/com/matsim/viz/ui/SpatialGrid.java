@@ -1,5 +1,6 @@
 package com.matsim.viz.ui;
 
+import com.matsim.viz.config.AppDefaults;
 import com.matsim.viz.domain.LinkSegment;
 import com.matsim.viz.domain.NetworkData;
 
@@ -13,8 +14,6 @@ import java.util.Set;
  * Uniform grid index for fast viewport-to-link queries in large MATSim networks.
  */
 public final class SpatialGrid {
-    private static final int MIN_GRID_SIZE = 50;
-    private static final int MAX_GRID_SIZE = 1500;
 
     private final double minX;
     private final double minY;
@@ -50,7 +49,7 @@ public final class SpatialGrid {
 
     public static SpatialGrid build(NetworkData networkData) {
         int linkCount = Math.max(1, networkData.getLinks().size());
-        int gridSize = clamp((int) Math.round(Math.sqrt(linkCount)), MIN_GRID_SIZE, MAX_GRID_SIZE);
+        int gridSize = clamp((int) Math.round(Math.sqrt(linkCount)), AppDefaults.Spatial.MIN_GRID_SIZE, AppDefaults.Spatial.MAX_GRID_SIZE);
 
         double minX = networkData.getMinX();
         double minY = networkData.getMinY();

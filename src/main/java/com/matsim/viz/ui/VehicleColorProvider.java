@@ -1,5 +1,6 @@
 package com.matsim.viz.ui;
 
+import com.matsim.viz.config.AppDefaults;
 import com.matsim.viz.domain.ColorMode;
 import com.matsim.viz.domain.VehicleMetadata;
 import com.matsim.viz.engine.SimulationModel;
@@ -11,51 +12,30 @@ import java.util.Locale;
 import java.util.Map;
 
 public final class VehicleColorProvider {
-    private static final Color DEFAULT_CAR_MODE_COLOR = new Color(0xFF0BAECF);
-    private static final Color DEFAULT_BIKE_MODE_COLOR = new Color(0x87EA0B);
-
-    private static final Color[] PALETTE = new Color[]{
-            new Color(0x1F77B4),
-            new Color(0x2CA02C),
-            new Color(0xFF7F0E),
-            new Color(0xD62728),
-            new Color(0x17BECF),
-            new Color(0x9467BD),
-            new Color(0x8C564B),
-            new Color(0xE377C2),
-            new Color(0x11116B),
-            new Color(0x003300),
-    };
+private static final Color[] PALETTE = AppDefaults.Colors.PALETTE.toArray(Color[]::new);
 
     private final Map<String, Color> modeColors = new HashMap<>();
     private final Map<String, Color> tripPurposeColors = new HashMap<>();
-        private final Map<String, Color> sexColors = new HashMap<>();
+    private final Map<String, Color> sexColors = new HashMap<>();
 
-        private int[] ageBinUpperBounds = new int[]{17, 35, 59};
-        private Color[] ageGroupColors = new Color[]{
-            new Color(0x2BB673),
-            new Color(0x00A6FB),
-            new Color(0xFF8C42),
-            new Color(0xD7263D),
-            new Color(0xff00ff),
-            new Color(0x330033)
-        };
+    private int[] ageBinUpperBounds = AppDefaults.Colors.AGE_BIN_UPPER_BOUNDS.stream().mapToInt(Integer::intValue).toArray();
+    private Color[] ageGroupColors = AppDefaults.Colors.AGE_GROUP_COLORS.toArray(Color[]::new);
 
     public VehicleColorProvider() {
-        modeColors.put("car", DEFAULT_CAR_MODE_COLOR);
-        modeColors.put("bike", DEFAULT_BIKE_MODE_COLOR);
-        modeColors.put("bus", new Color(0xF0FF17));
-        modeColors.put("tram", new Color(0xFF0F6F));
-        modeColors.put("rail", new Color(0x6C0202));
-        modeColors.put("train", new Color(0xFD0000));
-        modeColors.put("subway", new Color(0x0077CC));
-        modeColors.put("metro", new Color(0x0077CC));
-        modeColors.put("ferry", new Color(0x00FFC3));
-        modeColors.put("funicular", new Color(0x8855BB));
-        sexColors.put("male", new Color(0xFF0BAECF, true));
-        sexColors.put("female", new Color(0xFF4FA3));
-        sexColors.put("other", new Color(0xFFC857));
-        sexColors.put("unknown", new Color(0x9A9A9A));
+        modeColors.put("car", AppDefaults.Colors.DEFAULT_CAR_MODE_COLOR);
+        modeColors.put("bike", AppDefaults.Colors.DEFAULT_BIKE_MODE_COLOR);
+        modeColors.put("bus", AppDefaults.Colors.MODE_BUS);
+        modeColors.put("tram", AppDefaults.Colors.MODE_TRAM);
+        modeColors.put("rail", AppDefaults.Colors.MODE_RAIL);
+        modeColors.put("train", AppDefaults.Colors.MODE_TRAIN);
+        modeColors.put("subway", AppDefaults.Colors.MODE_SUBWAY);
+        modeColors.put("metro", AppDefaults.Colors.MODE_METRO);
+        modeColors.put("ferry", AppDefaults.Colors.MODE_FERRY);
+        modeColors.put("funicular", AppDefaults.Colors.MODE_FUNICULAR);
+        sexColors.put("male", AppDefaults.Colors.SEX_MALE);
+        sexColors.put("female", AppDefaults.Colors.SEX_FEMALE);
+        sexColors.put("other", AppDefaults.Colors.SEX_OTHER);
+        sexColors.put("unknown", AppDefaults.Colors.SEX_UNKNOWN);
     }
 
     public Color colorFor(int traversalIndex, SimulationModel model, ColorMode mode) {
@@ -69,7 +49,7 @@ public final class VehicleColorProvider {
 
     public Color colorForTripMode(String mode) {
         if (mode == null || mode.isBlank()) {
-            return new Color(0x9A9A9A);
+            return AppDefaults.Colors.SEX_UNKNOWN;
         }
         return modeColor(mode);
     }
@@ -82,7 +62,7 @@ public final class VehicleColorProvider {
         }
 
         if (purpose == null || purpose.isBlank()) {
-            return new Color(0x555555);
+            return AppDefaults.Colors.MISSING_MODE;
         }
 
         String purposeKey = normalize(purpose);
@@ -99,12 +79,12 @@ public final class VehicleColorProvider {
     private Color colorByAgeGroup(int traversalIndex, SimulationModel model) {
         VehicleMetadata metadata = metadataForTraversal(traversalIndex, model);
         if (metadata == null || metadata.age() == null) {
-            return new Color(0x555555);
+            return AppDefaults.Colors.MISSING_MODE;
         }
 
         int groupIndex = ageGroupIndex(metadata.age());
         if (groupIndex < 0 || groupIndex >= ageGroupColors.length) {
-            return new Color(0x666666);
+            return AppDefaults.Colors.MISSING_METADATA;
         }
         return ageGroupColors[groupIndex];
     }
@@ -190,7 +170,7 @@ public final class VehicleColorProvider {
 
     public Color modeColor(String mode) {
         if (mode == null || mode.isBlank()) {
-            return new Color(0x9A9A9A);
+            return AppDefaults.Colors.SEX_UNKNOWN;
         }
         String key = normalize(mode);
         Color configured = modeColors.get(key);
@@ -211,7 +191,7 @@ public final class VehicleColorProvider {
 
     public Color tripPurposeColor(String tripPurpose) {
         if (tripPurpose == null || tripPurpose.isBlank()) {
-            return new Color(0x666666);
+            return AppDefaults.Colors.MISSING_METADATA;
         }
 
         String key = normalize(tripPurpose);
@@ -280,7 +260,7 @@ public final class VehicleColorProvider {
 
     public Color ageGroupColor(int index) {
         if (index < 0 || index >= ageGroupColors.length) {
-            return new Color(0x666666);
+            return AppDefaults.Colors.MISSING_METADATA;
         }
         return ageGroupColors[index];
     }
