@@ -379,16 +379,37 @@ its data on a worker thread. Playback stays at the same simulation time while ed
 The editor shares immutable network records and the viewer's spatial index, draws only
 viewport candidates, and caches unchanged views. Selecting a link no longer triggers
 continuous full-network redraws. Opening the editor does not start map downloads.
+The background has a separate cached raster: arriving tiles refresh the map without
+rebuilding roads, and link edits reuse the map. GPU-compatible Java2D images allow
+hardware acceleration where supported, with a software fallback.
+
+**Detailed geometry** enables usable CSV curves by default and can be switched off.
+Click any segment of a merged chain to select its complete XML link. Editing changes
+that single merged link, preserving `old_link_id`; the old CSV segments are not separate
+editable XML records. Curves are shared with playback, including transit overlays.
+New links or links whose endpoints move use straight geometry; CSV files are not modified.
 
 - **Find** a link or node by its exact ID; the camera centres on it.
 - **Left drag** or middle mouse pans; the wheel zooms; **Fit network** resets the view.
-- **Edit Selected Link** changes length, free speed in **km/h**, lanes, capacity and
+- **Double-click a link** or choose **Edit Selected Link** to change length, free speed in **km/h**, lanes, capacity and
   allowed modes (for example `car,bus` or `bus`). Speeds are saved in MATSim's m/s.
+  Length, speed, lane count and capacity must be finite and strictly positive; at least
+  one mode is required. Invalid input keeps the form open with your entered values.
 - **Add reverse direction** copies the selected link's parameters with reversed endpoints
   and a new unique ID. Each direction can then be edited independently.
 - Create/delete nodes and links; **Undo / Redo** retains the last 50 edits without
   making a complete network copy for each operation. **Cancel tool** exits creation mode.
 - **Map background** enables OSM on demand, using EPSG:2056 by default.
+- **Check invalid links** scans the whole network, including unchanged source links.
+  The report lists every affected link and its invalid fields/values. Select a row to
+  centre the map, then use **Edit selected link**. Invalid links are highlighted pink;
+  the current selection stays orange. Run the check again after corrections.
+  On save, exported speeds are first clamped to **10?300 km/h** (2.7777778?83.3333333 m/s),
+  including infinite speeds. In-range speeds and all other fields are preserved.
+  This normalization applies to the exported copy, not the live editor or source files.
+  Saving opens the report only for remaining invalid values (including NaN speeds).
+  The manual check reports the current editor values before export normalization.
+- Link editing uses a compact two-column, scrollable form sized to the screen.
 - **Save Modified Network** writes `.xml` or `.xml.gz` with MATSim's `NetworkWriter`
   on a worker thread. Invalid numeric values or missing endpoints prevent export.
   The destination is replaced only after a temporary output has been written successfully.
@@ -488,8 +509,8 @@ the same path. Vehicle progress follows distance along the polyline, with headin
 following the local segment. The geometry spatial index includes bends outside the
 endpoint bounding box. At overview zoom, roads remain thin but keep their curves.
 MATSim simulation lengths, event times, link IDs and capacities are unchanged. The
-network editor continues to edit the XML network; this toggle is a playback display
-setting and does not export modified geometry.
+network editor has its own geometry toggle and edits the XML network; neither toggle
+exports modified CSV geometry.
 
 The Geneva output network checked against `switzerland_detailed_network.csv` matched
 135,788 links, including 2,438 reconstructed merged links, with 1,325 straight fallbacks.
@@ -550,3 +571,21 @@ use the minimum; the daily maximum uses the maximum. At overview zoom, coinciden
 directions use the larger volume, matching the colour aggregation. Detailed CSV
 curves remain supported. Speed heatmaps and vehicle animation retain physical road
 widths. Defaults and control bounds are in `AppDefaults.Heatmap`.
+
+### Startup fails with `Java heap space`
+
+Large scenarios need more heap than Java's automatic limit. For the local Geneva
+scenario (about 18.7 million traversals), a roughly 4 GB default heap failed during
+model construction; the existing IntelliJ launch uses `-Xms2g -Xmx8g`.
+For a PowerShell Maven launch, use the same allocation:
+
+```powershell
+$env:MAVEN_OPTS = "$env:MAVEN_OPTS -Xms2g -Xmx8g"
+mvn -q compile exec:java '-Dexec.args=--gui-only'
+```
+
+`--gui-only` requires an existing simulation cache and does not rebuild it.
+For VS Code, set the Main launch's `vmArgs` to the same values and `cwd` to
+`${workspaceFolder}`. IDE settings are local and ignored by Git; committing source
+files does not carry those JVM settings to another launch environment. Heap options
+must be supplied before Java starts, so they cannot be applied by `AppDefaults`.

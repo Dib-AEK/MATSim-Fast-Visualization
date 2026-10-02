@@ -18,7 +18,7 @@ def argfile(path, arguments):
 
 subprocess.run(['javac', argfile(Path('target/render-check-compile.args'),
     ['-proc:none', '-cp', dependencies, '-d', output, *sources])], check=True)
-for check in ('VolumeWidthCheck', 'PlaybackSeekCheck', 'VehicleMotionCheck', 'VehicleSizeCheck', 'PublicTransportModesCheck', 'DefaultsCheck', 'DetailedGeometryCheck', 'NetworkEditorCheck', 'TransitEditorCheck', 'HeatmapTransitionCheck', 'PanOpacityCheck', 'RoadTaperCheck', 'ZoomDetailCheck', 'CarriagewayRenderingCheck', 'RecordingBufferCheck', 'RecordingQualityCheck', 'MapBackgroundCheck', 'MatsimIntegrationCheck', 'BusEventsCheck'):
+for check in ('EditorSpeedClampCheck', 'EditorValidationCheck', 'EditorDetailedGeometryCheck', 'VolumeWidthCheck', 'PlaybackSeekCheck', 'VehicleMotionCheck', 'VehicleSizeCheck', 'PublicTransportModesCheck', 'DefaultsCheck', 'DetailedGeometryCheck', 'NetworkEditorCheck', 'TransitEditorCheck', 'HeatmapTransitionCheck', 'PanOpacityCheck', 'RoadTaperCheck', 'ZoomDetailCheck', 'CarriagewayRenderingCheck', 'RecordingBufferCheck', 'RecordingQualityCheck', 'MapBackgroundCheck', 'MatsimIntegrationCheck', 'BusEventsCheck'):
     subprocess.run(['java', argfile(Path('target/render-check-run.args'),
         ['-Djava.awt.headless=true', '-cp', str(output) + os.pathsep + dependencies,
          'com.matsim.viz.ui.' + check])], check=True)

@@ -213,3 +213,26 @@ roads cannot obscure low-volume widths. Use the fixed daily colour intensity sca
 for widths too, including overview aggregation and temporal interpolation. UI min/max
 controls update immediately and must preserve finite ordered bounds. Defaults live in
 `AppDefaults.Heatmap`; `VolumeWidthCheck` covers both volume views and zoom levels.
+
+Editor detailed geometry shares the immutable `DetailedNetworkGeometry` with playback
+(or loads it on the preparation worker). All picked polyline segments refer to the
+owning XML link ID, including `old_link_id` chains; do not expand merged links into
+separate editable records. Numeric edits preserve provenance. Changed endpoints/new
+links fall back to XML chords. Transit overlays and picking follow the same curves.
+Double-click opens the link dialog; invalid inputs retain the form. Length, speed,
+lanes and capacity must be finite and strictly positive, and modes cannot be empty.
+The editor's map raster is separate from its transparent roads raster; refresh tiles
+at the cached camera without invalidating roads. Compatible Java2D images have a
+software fallback. `EditorDetailedGeometryCheck` covers merged selection, geometry
+toggle, curved viewport bounds, map-only refresh, validation, undo and native export.
+
+Network editor validation collects all link issues with IDs, field names and values
+in `SaveSnapshot.validationIssues()`. Export throws `NetworkValidationException` with
+the same report before touching the destination. FX shows a virtualized list with
+locate/edit actions and publishes pink highlights on EDT. Keep unchanged input links
+in the scan. Export first calls `clampSpeedsForExport`, applying Editor's 10?300 km/h
+bounds in m/s to every link (including infinities), as requested by the user. NaN
+remains invalid. Normalization changes only the exported copy; the manual check still
+reports raw editor values. Preserve all non-speed fields and native MATSim writing. `EditorValidationCheck` covers
+reporting, highlights, corrections/undo and preservation of a failed-save destination.
+The Swing link form is scrollable and screen-bounded; sizing defaults live in Editor.

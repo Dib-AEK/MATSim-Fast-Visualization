@@ -188,6 +188,10 @@ public final class AppDefaults {
         public static final Color BACKGROUND = new Color(0x0F1115);
         public static final Color LINK_COLOR = new Color(0x808A9D);
         public static final Color NODE_COLOR_DEFAULT = new Color(0xC7CEDD);
+        public static final Color INVALID_LINK = new Color(0xFF4081);
+        public static final int DIALOG_WIDTH_PIXELS = 620;
+        public static final int DIALOG_HEIGHT_PIXELS = 420;
+        public static final double DIALOG_SCREEN_FRACTION = 0.7;
         public static final Color SELECTED_LINK = new Color(0xF05D23);
         public static final Color SELECTED_NODE = new Color(0x1FA2FF);
         public static final double VIEWPORT_MARGIN_PIXELS = 80.0;
@@ -195,6 +199,8 @@ public final class AppDefaults {
         public static final int CACHE_MARGIN = 256;
         public static final double LINK_CAPACITY = 900.0;
         public static final double LINK_SPEED_KMH = 50.0;
+        public static final double SAVE_MIN_SPEED_KMH = 10.0;
+        public static final double SAVE_MAX_SPEED_KMH = 300.0;
         public static final double LINK_LANES = 1.0;
         public static final String LINK_MODE = "car";
         public static final int UNDO_LIMIT = 50;

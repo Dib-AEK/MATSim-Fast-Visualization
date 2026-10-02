@@ -1,5 +1,8 @@
 package com.matsim.viz.ui.editor;
 
+import com.matsim.viz.domain.LinkPolyline;
+import com.matsim.viz.parser.DetailedNetworkGeometry;
+
 import com.matsim.viz.config.AppDefaults;
 import com.matsim.viz.domain.LinkSegment;
 import com.matsim.viz.ui.SpatialGrid;
@@ -23,6 +26,8 @@ import javax.swing.JLabel;
 import javax.swing.JMenuItem;
 import javax.swing.JOptionPane;
 import javax.swing.JPanel;
+import javax.swing.JScrollPane;
+import java.awt.GraphicsEnvironment;
 import javax.swing.JPopupMenu;
 import javax.swing.JTextArea;
 import javax.swing.JTextField;
@@ -117,10 +122,14 @@ public final class NetworkEditorPanel extends JPanel {
 
     public record PreparedNetwork(NetworkData data, Map<String, NodePoint> nodes,
             Map<String, LinkSegment> links, Set<String> directions, Set<String> modes,
-            Set<String> orphanNodes, SpatialGrid spatialIndex) { }
+            Set<String> orphanNodes, SpatialGrid spatialIndex, DetailedNetworkGeometry geometry) { }
 
     /** Prepare off the UI thread, sharing immutable domain objects and the viewer's spatial index. */
     public static PreparedNetwork prepare(NetworkData data, SpatialGrid index) {
+        return prepare(data, index, null);
+    }
+
+    public static PreparedNetwork prepare(NetworkData data, SpatialGrid index, DetailedNetworkGeometry geometry) {
         Map<String, NodePoint> nodes = new EditableNetworkMap<>(data.getNodes());
         Map<String, LinkSegment> links = new EditableNetworkMap<>(data.getLinks());
         Set<String> directions = new LinkedHashSet<>(), modes = new LinkedHashSet<>();
@@ -131,10 +140,40 @@ public final class NetworkEditorPanel extends JPanel {
             orphans.remove(link.fromNodeId()); orphans.remove(link.toNodeId());
         }
         return new PreparedNetwork(data, nodes, links, directions, modes, orphans,
-                index == null ? SpatialGrid.build(data) : index);
+                index == null ? SpatialGrid.build(data) : index, geometry);
     }
 
     private final SpatialGrid spatialIndex;
+    private final NetworkData originalNetwork;
+    private final DetailedNetworkGeometry detailedGeometry;
+    private boolean useDetailedGeometry;
+    private BufferedImage mapLayer;
+    private String mapLayerKey;
+    private boolean mapDirty;
+    public boolean hasDetailedGeometry() { return detailedGeometry != null && detailedGeometry.size() > 0; }
+    public boolean isDetailedGeometryEnabled() { return useDetailedGeometry; }
+    public void setDetailedGeometryEnabled(boolean enabled) {
+        useDetailedGeometry = enabled && hasDetailedGeometry(); drawingCache = null; repaint();
+    }
+    private LinkPolyline geometryFor(LinkSegment link) {
+        if (!useDetailedGeometry) return null;
+        LinkSegment original = originalNetwork.getLinks().get(link.id());
+        if (original == null || original.fromX()!=link.fromX() || original.fromY()!=link.fromY()
+                || original.toX()!=link.toX() || original.toY()!=link.toY()) return null;
+        return detailedGeometry.get(link.id());
+    }
+    private LinkPolyline screenLine(LinkSegment link) {
+        var curve = geometryFor(link);
+        if (curve == null) {
+            var a=worldToScreen(link.fromX(),link.fromY()); var b=worldToScreen(link.toX(),link.toY());
+            if (a.distance(b)==0) return null;
+            return new LinkPolyline(new double[]{a.x,a.y,b.x,b.y});
+        }
+        double[] points=new double[curve.size()*2];
+        for(int i=0;i<curve.size();i++){var p=worldToScreen(curve.x(i),curve.y(i));points[2*i]=p.x;points[2*i+1]=p.y;}
+        return new LinkPolyline(points);
+    }
+
     private final Set<String> changedLinks = new LinkedHashSet<>();
     private final Set<String> extraNodes;
     private final Set<String> viewportLinks = new LinkedHashSet<>();
@@ -166,6 +205,8 @@ public final class NetworkEditorPanel extends JPanel {
             return thread;
         });
 
+        originalNetwork = prepared.data(); detailedGeometry = prepared.geometry();
+        useDetailedGeometry = hasDetailedGeometry() && AppDefaults.Geometry.ENABLED_WHEN_AVAILABLE;
         nodes = prepared.nodes(); links = prepared.links();
         directedConnectionKeys = prepared.directions(); availableLinkModes = prepared.modes();
         visibleLinkModes.addAll(availableLinkModes);
@@ -229,6 +270,13 @@ public final class NetworkEditorPanel extends JPanel {
                 if (locationPicker != null) {
                     var picker=locationPicker;locationPicker=null;
                     picker.accept(screenToWorld(e.getX(),e.getY()));return;
+                }
+                if (!createNodeArmed && !createLinkArmed && e.getClickCount() >= 2) {
+                    LinkSegment clicked = findNearestLink(e.getPoint(), 8.0, false);
+                    if (clicked != null) {
+                        selectedLinkId=clicked.id(); selectedNodeId=null; notifySelectionChanged(); editSelectedLink();
+                    }
+                    return;
                 }
                 if (!createNodeArmed && !createLinkArmed && selectTransitAt(e.getPoint())) return;
                 if (createNodeArmed) {
@@ -302,9 +350,7 @@ public final class NetworkEditorPanel extends JPanel {
             g.setStroke(new BasicStroke(chosen?4f:1.5f,BasicStroke.CAP_ROUND,BasicStroke.JOIN_ROUND));
             for (String id:path.links()) {
                 LinkSegment link=links.get(id); if(link==null)continue;
-                var a=worldToScreen(link.fromX(),link.fromY()); var b=worldToScreen(link.toX(),link.toY());
-                if (g.getClipBounds()==null || g.getClipBounds().intersectsLine(a.x,a.y,b.x,b.y))
-                    g.draw(new java.awt.geom.Line2D.Double(a,b));
+                var line=screenLine(link); if(line!=null)g.draw(line.path(0,0,1));
             }
             if(chosen && (highlightedRoute==null || path.route().equals(highlightedRoute))) {
                 int index=0;
@@ -323,9 +369,11 @@ public final class NetworkEditorPanel extends JPanel {
         TransitPath best=null;double distance=7;
         for(TransitPath path:transitPaths) for(String id:path.links()) {
             LinkSegment link=links.get(id);if(link==null)continue;
-            var a=worldToScreen(link.fromX(),link.fromY());var b=worldToScreen(link.toX(),link.toY());
-            double d=pointToSegmentDistance(click.x,click.y,a.x,a.y,b.x,b.y);
-            if(d<distance){distance=d;best=path;}
+            var curve=screenLine(link);if(curve==null)continue;
+            for(int i=1;i<curve.size();i++) {
+                double d=pointToSegmentDistance(click.x,click.y,curve.x(i-1),curve.y(i-1),curve.x(i),curve.y(i));
+                if(d<distance){distance=d;best=path;}
+            }
         }
         if(best==null)return false;
         transitSelection.accept(best.line(),best.route());return true;
@@ -404,6 +452,7 @@ public final class NetworkEditorPanel extends JPanel {
         drawingCache = null;
         renderedPickLinks.clear(); viewportLinks.clear(); viewportNodes.clear();
         if (!active) {
+            mapLayer=null; mapLayerKey=null;
             ++mapGeneration;
             if (osmBackground != null) osmBackground.close();
             osmBackground = null;
@@ -458,21 +507,36 @@ public final class NetworkEditorPanel extends JPanel {
 
     public SaveSummary saveNetwork(Path outputFile) { return snapshotForSave().write(outputFile); }
 
+    /** Normalize export speeds before validation; keep the live scenario and editor records unchanged. */
+    private static Map<String, LinkSegment> clampSpeedsForExport(Map<String, LinkSegment> links) {
+        Map<String, LinkSegment> normalized = new LinkedHashMap<>(links);
+        double min = AppDefaults.Editor.SAVE_MIN_SPEED_KMH / 3.6;
+        double max = AppDefaults.Editor.SAVE_MAX_SPEED_KMH / 3.6;
+        for (LinkSegment link : links.values()) {
+            double speed = Math.max(min, Math.min(max, link.freeSpeed()));
+            // NaN has no ordering and remains a validation error.
+            if (Double.compare(speed, link.freeSpeed()) != 0) {
+                normalized.put(link.id(), new LinkSegment(link.id(), link.fromNodeId(), link.toNodeId(),
+                        link.fromX(), link.fromY(), link.toX(), link.toY(), link.length(), speed,
+                        link.lanes(), link.allowedModes(), link.attributes()));
+            }
+        }
+        return normalized;
+    }
+
     private static SaveSummary writeNetwork(Map<String, NodePoint> nodes, Map<String, LinkSegment> links, Path outputFile) {
+        links = clampSpeedsForExport(links);
         try {
             Files.createDirectories(outputFile.toAbsolutePath().normalize().getParent());
         } catch (java.io.IOException ex) {
             throw new IllegalStateException("Cannot create output directory", ex);
         }
 
+        var issues = validationIssues(nodes, links);
+        if (!issues.isEmpty()) throw new NetworkValidationException(issues);
         for (NodePoint node : nodes.values()) {
             if (!Double.isFinite(node.x()) || !Double.isFinite(node.y()))
                 throw new IllegalArgumentException("Invalid coordinates at node " + node.id());
-        }
-        for (LinkSegment link : links.values()) {
-            validateNumbers(link.length(), link.freeSpeed(), link.lanes(), Double.parseDouble(link.attributes().getOrDefault("capacity", Double.toString(AppDefaults.Editor.LINK_CAPACITY))));
-            if (!nodes.containsKey(link.fromNodeId()) || !nodes.containsKey(link.toNodeId()))
-                throw new IllegalArgumentException("Link " + link.id() + " refers to a missing node");
         }
         Network network = NetworkUtils.createNetwork();
         for (NodePoint node : nodes.values()) {
@@ -576,6 +640,7 @@ public final class NetworkEditorPanel extends JPanel {
             selectedLinkId = id; selectedNodeId = null;
             visibleLinkModes.addAll(selected.allowedModes());
             x = (selected.fromX()+selected.toX())/2; y = (selected.fromY()+selected.toY())/2;
+            var curve=geometryFor(selected);if(curve!=null){var point=curve.at(0.5,0);x=point.x();y=point.y();}
         }
         zoom = Math.max(zoom, Math.min(AppDefaults.Camera.MAX_ZOOM, 2 / baseScale));
         panX = getWidth()/2.0 - (x-minX)*baseScale*zoom;
@@ -617,13 +682,65 @@ public final class NetworkEditorPanel extends JPanel {
         scheduleDerivedRebuild(); notifySelectionChanged(); repaint();
     }
 
+    private Map<String, String> highlightedIssues = Map.of();
+
+    public void highlightValidationIssues(Map<String, String> issues) {
+        highlightedIssues = Map.copyOf(issues);
+        // Invalid links must be visible even when their mode was filtered out.
+        for (String id : issues.keySet()) {
+            var link = links.get(id);
+            if (link != null) visibleLinkModes.addAll(link.allowedModes());
+        }
+        drawingCache = null;
+        repaint();
+    }
+
+    public static final class NetworkValidationException extends IllegalArgumentException {
+        private final Map<String, String> issues;
+        public NetworkValidationException(Map<String, String> issues) {
+            super(issues.size() + " invalid links. First: " + issues.entrySet().iterator().next());
+            this.issues = Map.copyOf(issues);
+        }
+        public Map<String, String> issues() { return issues; }
+    }
+
+    private static String linkProblems(LinkSegment link, Map<String, NodePoint> nodes) {
+        List<String> errors = new ArrayList<>();
+        String[] names = {"length (m)", "speed (m/s)", "lanes", "capacity (veh/h)"};
+        String capacity = link.attributes().getOrDefault("capacity", Double.toString(AppDefaults.Editor.LINK_CAPACITY));
+        double parsedCapacity;
+        try { parsedCapacity = Double.parseDouble(capacity); }
+        catch (RuntimeException ex) { parsedCapacity = Double.NaN; }
+        double[] values = {link.length(), link.freeSpeed(), link.lanes(), parsedCapacity};
+        for (int i = 0; i < values.length; i++)
+            if (!Double.isFinite(values[i]) || values[i] <= 0)
+                errors.add(names[i] + " = " + (i == 3 ? capacity : Double.toString(values[i])) + " (must be finite and > 0)");
+        if (link.allowedModes().isEmpty()) errors.add("allowed modes are empty");
+        for (String id : List.of(link.fromNodeId(), link.toNodeId())) {
+            var node = nodes.get(id);
+            if (node == null) errors.add("missing node " + id);
+            else if (!Double.isFinite(node.x()) || !Double.isFinite(node.y())) errors.add("invalid coordinates at node " + id);
+        }
+        return String.join("; ", errors);
+    }
+
+    private static Map<String, String> validationIssues(Map<String, NodePoint> nodes, Map<String, LinkSegment> links) {
+        Map<String, String> issues = new LinkedHashMap<>();
+        for (var link : links.values()) {
+            String problem = linkProblems(link, nodes);
+            if (!problem.isEmpty()) issues.put(link.id(), problem);
+        }
+        return issues;
+    }
+
     private static void validateNumbers(double length, double speed, double lanes, double capacity) {
         if (!Double.isFinite(length) || length <= 0 || !Double.isFinite(speed) || speed <= 0
-                || !Double.isFinite(lanes) || lanes <= 0 || !Double.isFinite(capacity) || capacity < 0)
-            throw new IllegalArgumentException("Length, speed and lanes must be positive and finite; capacity must be nonnegative.");
+                || !Double.isFinite(lanes) || lanes <= 0 || !Double.isFinite(capacity) || capacity <= 0)
+            throw new IllegalArgumentException("Length, speed and lanes must be positive and finite; capacity must also be positive and finite.");
     }
 
     public record SaveSnapshot(Map<String, NodePoint> nodes, Map<String, LinkSegment> links) {
+        public Map<String, String> validationIssues() { return NetworkEditorPanel.validationIssues(nodes, links); }
         public SaveSummary write(Path output) {
             return writeNetwork(nodes, links, output);
         }
@@ -700,20 +817,24 @@ public final class NetworkEditorPanel extends JPanel {
 
         LinkSegment existing = links.get(selectedLinkId);
         String initialCapacity = existing.attributes().getOrDefault("capacity", Double.toString(AppDefaults.Editor.LINK_CAPACITY));
-        JTextField lengthField = new JTextField(String.format(Locale.ROOT, "%.2f", existing.length()));
-        JTextField freeSpeedField = new JTextField(String.format(Locale.ROOT, "%.6f", existing.freeSpeed() * 3.6));
-        JTextField lanesField = new JTextField(String.format(Locale.ROOT, "%.3f", existing.lanes()));
+        JTextField lengthField = new JTextField(Double.toString(existing.length()));
+        JTextField freeSpeedField = new JTextField(Double.toString(existing.freeSpeed() * 3.6));
+        JTextField lanesField = new JTextField(Double.toString(existing.lanes()));
         JTextField modesField = new JTextField(String.join(",", existing.allowedModes()));
         JTextField capacityField = new JTextField(initialCapacity);
         JTextField typeField = new JTextField(existing.attributes().getOrDefault("type", ""));
         JTextField onewayField = new JTextField(existing.attributes().getOrDefault("oneway", ""));
-        JTextArea attrsPatchArea = new JTextArea(4, 28);
+        JTextArea attrsPatchArea = new JTextArea(2, 28);
         attrsPatchArea.setText("# extra key=value lines to add/update");
 
-        JPanel panel = new JPanel(new GridLayout(0, 1, 4, 4));
+        JPanel panel = new JPanel(new GridLayout(0, 2, 8, 6));
         panel.setBorder(BorderFactory.createEmptyBorder(8, 8, 8, 8));
         panel.add(new JLabel("Link ID: " + existing.id()));
         panel.add(new JLabel("Direction: " + existing.fromNodeId() + " -> " + existing.toNodeId()));
+        if (existing.attributes().containsKey("old_link_id")) {
+            JLabel merged = new JLabel("Merged link: edits apply to the entire highlighted chain.");
+            merged.setToolTipText(existing.attributes().get("old_link_id")); panel.add(merged); panel.add(new JLabel(""));
+        }
         panel.add(new JLabel("Length (m)"));
         panel.add(lengthField);
         panel.add(new JLabel("Free speed (km/h)"));
@@ -729,81 +850,92 @@ public final class NetworkEditorPanel extends JPanel {
         panel.add(new JLabel("Oneway tag (metadata only; reverse links are edited separately)"));
         panel.add(onewayField);
         panel.add(new JLabel("Extra attributes patch (key=value, optional)"));
-        panel.add(attrsPatchArea);
+        panel.add(new JScrollPane(attrsPatchArea));
 
-        int choice = JOptionPane.showConfirmDialog(this, panel, "Quick Edit Link", JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
-        if (choice != JOptionPane.OK_OPTION) {
-            return false;
-        }
-
-        double length;
-        double freeSpeed;
-        double lanes;
-        double capacity;
-        try {
-            length = Double.parseDouble(trimToEmpty(lengthField.getText()));
-            freeSpeed = Double.parseDouble(trimToEmpty(freeSpeedField.getText())) / 3.6;
-            lanes = Double.parseDouble(trimToEmpty(lanesField.getText()));
-            capacity = Double.parseDouble(trimToEmpty(capacityField.getText()));
-            validateNumbers(length, freeSpeed, lanes, capacity);
-        } catch (IllegalArgumentException ex) {
-            JOptionPane.showMessageDialog(this, ex.getMessage(), "Invalid Link", JOptionPane.WARNING_MESSAGE);
-            return false;
-        }
-
-        Map<String, String> attrs = new LinkedHashMap<>(existing.attributes());
-        attrs.put("capacity", Double.toString(capacity));
-        String type = trimToEmpty(typeField.getText());
-        if (type.isEmpty()) {
-            attrs.remove("type");
-        } else {
-            attrs.put("type", type);
-        }
-
-        String oneway = trimToEmpty(onewayField.getText());
-        if (oneway.isEmpty()) {
-            attrs.remove("oneway");
-        } else {
-            attrs.put("oneway", oneway);
-        }
-
-        Map<String, String> patched = parseAttributes(attrsPatchArea.getText());
-        patched.forEach((key, value) -> {
-            if (key.startsWith("#")) {
-                return;
+        JScrollPane form = new JScrollPane(panel);
+        var screen = getGraphicsConfiguration() == null
+                ? GraphicsEnvironment.getLocalGraphicsEnvironment().getMaximumWindowBounds()
+                : getGraphicsConfiguration().getBounds();
+        form.setPreferredSize(new Dimension(Math.min(AppDefaults.Editor.DIALOG_WIDTH_PIXELS, (int)(screen.width * AppDefaults.Editor.DIALOG_SCREEN_FRACTION)),
+                Math.min(AppDefaults.Editor.DIALOG_HEIGHT_PIXELS, (int)(screen.height * AppDefaults.Editor.DIALOG_SCREEN_FRACTION))));
+        while (true) {
+            int choice = JOptionPane.showConfirmDialog(this, form, "Quick Edit Link", JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
+            if (choice != JOptionPane.OK_OPTION) {
+                return false;
             }
-            attrs.put(key, value);
-        });
-        attrs.put("capacity", Double.toString(capacity));
 
-        LinkSegment edited = new LinkSegment(
-                existing.id(),
-                existing.fromNodeId(),
-                existing.toNodeId(),
-                existing.fromX(),
-                existing.fromY(),
-                existing.toX(),
-                existing.toY(),
-                length,
-                freeSpeed,
-                lanes,
-                parseModes(modesField.getText()),
-                attrs
-        );
+            double length;
+            double freeSpeed;
+            double lanes;
+            double capacity;
+            try {
+                length = Double.parseDouble(trimToEmpty(lengthField.getText()));
+                freeSpeed = Double.parseDouble(trimToEmpty(freeSpeedField.getText())) / 3.6;
+                lanes = Double.parseDouble(trimToEmpty(lanesField.getText()));
+                capacity = Double.parseDouble(trimToEmpty(capacityField.getText()));
+                validateNumbers(length, freeSpeed, lanes, capacity);
+                if (modesField.getText().replace(",", "").isBlank()) throw new IllegalArgumentException("Choose at least one allowed mode");
+            } catch (IllegalArgumentException ex) {
+                JOptionPane.showMessageDialog(this, ex.getMessage(), "Invalid Link", JOptionPane.WARNING_MESSAGE);
+                continue;
+            }
 
-        replaceLink(existing, edited);
-        selectedLinkId = edited.id();
-        selectedNodeId = null;
-        notifySelectionChanged();
-        repaint();
-        return true;
+            Map<String, String> attrs = new LinkedHashMap<>(existing.attributes());
+            attrs.put("capacity", Double.toString(capacity));
+            String type = trimToEmpty(typeField.getText());
+            if (type.isEmpty()) {
+                attrs.remove("type");
+            } else {
+                attrs.put("type", type);
+            }
+
+            String oneway = trimToEmpty(onewayField.getText());
+            if (oneway.isEmpty()) {
+                attrs.remove("oneway");
+            } else {
+                attrs.put("oneway", oneway);
+            }
+
+            Map<String, String> patched = parseAttributes(attrsPatchArea.getText());
+            patched.forEach((key, value) -> {
+                if (key.startsWith("#")) {
+                    return;
+                }
+                attrs.put(key, value);
+            });
+            attrs.put("capacity", Double.toString(capacity));
+            // Provenance identifies the complete merged geometry and must survive attribute patches.
+            if (existing.attributes().containsKey("old_link_id")) attrs.put("old_link_id", existing.attributes().get("old_link_id"));
+
+            LinkSegment edited = new LinkSegment(
+                    existing.id(),
+                    existing.fromNodeId(),
+                    existing.toNodeId(),
+                    existing.fromX(),
+                    existing.fromY(),
+                    existing.toX(),
+                    existing.toY(),
+                    length,
+                    freeSpeed,
+                    lanes,
+                    parseModes(modesField.getText()),
+                    attrs
+            );
+
+            replaceLink(existing, edited);
+            selectedLinkId = edited.id();
+            selectedNodeId = null;
+            notifySelectionChanged();
+            repaint();
+            return true;
+        }
     }
 
     public void disposeResources() {
         disposed = true;
         zoomTimer.stop();
         ++mapGeneration;
-        drawingCache = null;
+        drawingCache = null; mapLayer = null;
         transitPaths = List.of(); transitSelection=null; locationPicker=null;
         undo.clear(); redo.clear();
         if (osmBackground != null) osmBackground.close();
@@ -824,28 +956,28 @@ public final class NetworkEditorPanel extends JPanel {
         if (drawingCache != null && key.equals(drawingKey)
                 && ((cacheZoom == zoom && Math.abs(panX-cachePanX) <= AppDefaults.Editor.CACHE_MARGIN && Math.abs(panY-cachePanY) <= AppDefaults.Editor.CACHE_MARGIN)
                     || zoomSettling)) {
+            if (mapDirty && panDragStart == null && !zoomSettling) refreshMapLayer();
             drawCachedView((Graphics2D) g);
             drawModeStatus((Graphics2D) g);
             return;
         }
         drawingKey = key;
         cachePanX = panX; cachePanY = panY; cacheZoom = zoom;
-        drawingCache = new BufferedImage(getWidth()+2*AppDefaults.Editor.CACHE_MARGIN, getHeight()+2*AppDefaults.Editor.CACHE_MARGIN, BufferedImage.TYPE_INT_RGB);
+        drawingCache = compatibleImage(getWidth()+2*AppDefaults.Editor.CACHE_MARGIN,
+                getHeight()+2*AppDefaults.Editor.CACHE_MARGIN, true);
+        refreshMapLayer();
         Graphics2D g2 = drawingCache.createGraphics();
         g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-        g2.setColor(AppDefaults.Editor.BACKGROUND);
-        g2.fillRect(0, 0, drawingCache.getWidth(), drawingCache.getHeight());
+
         g2.translate(AppDefaults.Editor.CACHE_MARGIN, AppDefaults.Editor.CACHE_MARGIN);
 
         ViewportBounds viewportBounds = computeViewportBounds(AppDefaults.Editor.VIEWPORT_MARGIN_PIXELS + AppDefaults.Editor.CACHE_MARGIN);
         Map<String, Double> nodeWidthCaps = new HashMap<>();
 
-        if (resolvedCoordinateSystem() != CoordinateSystem.NONE) {
-            drawOsmBackground(g2);
-        }
 
         viewportLinks.clear(); viewportNodes.clear();
         spatialIndex.query(viewportBounds.minX(), viewportBounds.minY(), viewportBounds.maxX(), viewportBounds.maxY(), viewportLinks);
+        if (useDetailedGeometry) detailedGeometry.query(viewportBounds.minX(), viewportBounds.minY(), viewportBounds.maxX(), viewportBounds.maxY(), viewportLinks);
         viewportLinks.addAll(changedLinks);
         viewportNodes.addAll(extraNodes);
         drawLinks(g2, viewportBounds, nodeWidthCaps);
@@ -863,9 +995,28 @@ public final class NetworkEditorPanel extends JPanel {
         double ratio = zoom/cacheZoom;
         g.translate(panX-ratio*cachePanX, getHeight()*(1-ratio)+ratio*cachePanY-panY);
         g.scale(ratio,ratio);
+        g.drawImage(mapLayer,-AppDefaults.Editor.CACHE_MARGIN,-AppDefaults.Editor.CACHE_MARGIN,null);
         g.drawImage(drawingCache,-AppDefaults.Editor.CACHE_MARGIN,-AppDefaults.Editor.CACHE_MARGIN,null);
         g.dispose();
         if (osmBackground != null) osmBackground.drawAttribution(graphics,getWidth(),getHeight());
+    }
+
+    private BufferedImage compatibleImage(int width,int height,boolean transparent) {
+        var config=getGraphicsConfiguration();
+        return config==null ? new BufferedImage(width,height,transparent?BufferedImage.TYPE_INT_ARGB_PRE:BufferedImage.TYPE_INT_RGB)
+                : config.createCompatibleImage(width,height,transparent?java.awt.Transparency.TRANSLUCENT:java.awt.Transparency.OPAQUE);
+    }
+    private void refreshMapLayer() {
+        String key=getWidth()+":"+getHeight()+":"+baseScale+":"+cacheZoom+":"+cachePanX+":"+cachePanY+":"+mapEnabled+":"+System.identityHashCode(osmBackground);
+        if (!mapDirty && mapLayer!=null && key.equals(mapLayerKey)) return;
+        mapLayerKey=key; mapDirty=false;
+        if(mapLayer==null || mapLayer.getWidth()!=drawingCache.getWidth() || mapLayer.getHeight()!=drawingCache.getHeight())
+            mapLayer=compatibleImage(drawingCache.getWidth(),drawingCache.getHeight(),false);
+        var g=mapLayer.createGraphics(); g.setColor(AppDefaults.Editor.BACKGROUND);g.fillRect(0,0,mapLayer.getWidth(),mapLayer.getHeight());
+        double x=panX,y=panY,z=zoom;
+        try { panX=cachePanX;panY=cachePanY;zoom=cacheZoom;
+            g.translate(AppDefaults.Editor.CACHE_MARGIN,AppDefaults.Editor.CACHE_MARGIN);drawOsmBackground(g);
+        } finally {panX=x;panY=y;zoom=z;g.dispose();}
     }
 
     private void drawOsmBackground(Graphics2D g2) {
@@ -875,7 +1026,7 @@ public final class NetworkEditorPanel extends JPanel {
             osmBackground.draw(mapGraphics, getWidth()+2*AppDefaults.Editor.CACHE_MARGIN, getHeight()+2*AppDefaults.Editor.CACHE_MARGIN,
                     (x,y)->screenToWorld(x-AppDefaults.Editor.CACHE_MARGIN,y-AppDefaults.Editor.CACHE_MARGIN),
                     (x,y)-> { var point=worldToScreen(x,y); return new Point2D.Double(point.x+AppDefaults.Editor.CACHE_MARGIN,point.y+AppDefaults.Editor.CACHE_MARGIN); },
-                    () -> { drawingCache = null; repaint(); });
+                    () -> { mapDirty = true; repaint(); });
             mapGraphics.dispose();
         }
     }
@@ -894,13 +1045,11 @@ public final class NetworkEditorPanel extends JPanel {
                 continue;
             }
 
-            Point2D.Double from = worldToScreen(link.fromX(), link.fromY());
-            Point2D.Double to = worldToScreen(link.toX(), link.toY());
             double strokeWidth = linkStrokeWidth(link);
-            double offsetSign = bidirectionalOffsetSign(link);
-            Point2D.Double shiftedFrom = applyPerpendicularOffset(from, to, offsetSign * Math.min(AppDefaults.Editor.BIDIRECTIONAL_OFFSET_PIXELS, baseScale * zoom * AppDefaults.Display.LANE_WIDTH_M));
-            Point2D.Double shiftedTo = applyPerpendicularOffset(to, from, -offsetSign * Math.min(AppDefaults.Editor.BIDIRECTIONAL_OFFSET_PIXELS, baseScale * zoom * AppDefaults.Display.LANE_WIDTH_M));
-            renderedPickLinks.add(new PickableLink(link.id(), shiftedFrom.x, shiftedFrom.y, shiftedTo.x, shiftedTo.y));
+            var line=screenLine(link); if(line==null)continue;
+            double offset=bidirectionalOffsetSign(link)*Math.min(AppDefaults.Editor.BIDIRECTIONAL_OFFSET_PIXELS,baseScale*zoom*AppDefaults.Display.LANE_WIDTH_M);
+            line=line.offset(offset);
+            for(int i=1;i<line.size();i++)renderedPickLinks.add(new PickableLink(link.id(),line.x(i-1),line.y(i-1),line.x(i),line.y(i)));
 
             viewportNodes.add(link.fromNodeId()); viewportNodes.add(link.toNodeId());
             nodeWidthCaps.merge(link.fromNodeId(), strokeWidth, Math::max);
@@ -909,12 +1058,14 @@ public final class NetworkEditorPanel extends JPanel {
             if (link.id().equals(selectedLinkId)) {
                 g2.setColor(AppDefaults.Editor.SELECTED_LINK);
                 g2.setStroke(new BasicStroke((float) (strokeWidth + 1.3), BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
-                g2.drawLine((int) Math.round(shiftedFrom.x), (int) Math.round(shiftedFrom.y), (int) Math.round(shiftedTo.x), (int) Math.round(shiftedTo.y));
-                drawSelectedLinkFlow(g2, shiftedFrom, shiftedTo);
+                g2.draw(line.path(0,0,1));
+                var a=line.at(0.45,0);var b=line.at(0.55,0);
+                drawSelectedLinkFlow(g2,new Point2D.Double(a.x(),a.y()),new Point2D.Double(b.x(),b.y()));
             } else {
-                g2.setColor(linkColor);
+                g2.setColor(highlightedIssues.containsKey(link.id()) && !linkProblems(link, nodes).isEmpty()
+                        ? AppDefaults.Editor.INVALID_LINK : linkColor);
                 g2.setStroke(new BasicStroke((float) strokeWidth, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
-                g2.drawLine((int) Math.round(shiftedFrom.x), (int) Math.round(shiftedFrom.y), (int) Math.round(shiftedTo.x), (int) Math.round(shiftedTo.y));
+                g2.draw(line.path(0,0,1));
             }
         }
     }
@@ -1203,6 +1354,9 @@ public final class NetworkEditorPanel extends JPanel {
     }
 
     private LinkSegment findNearestLink(Point click, double thresholdPixels) {
+        return findNearestLink(click, thresholdPixels, true);
+    }
+    private LinkSegment findNearestLink(Point click, double thresholdPixels, boolean cycle) {
         List<PickCandidate> candidates = new ArrayList<>();
         double ratio = zoom/cacheZoom;
         double pickX = (click.x-panX+ratio*cachePanX)/ratio;
@@ -1233,7 +1387,7 @@ public final class NetworkEditorPanel extends JPanel {
         candidates.sort((a, b) -> Double.compare(a.distance(), b.distance()));
         PickCandidate chosen = candidates.getFirst();
 
-        if (selectedLinkId != null && selectedLinkId.equals(chosen.linkId()) && candidates.size() > 1) {
+        if (cycle && selectedLinkId != null && selectedLinkId.equals(chosen.linkId()) && candidates.size() > 1) {
             for (int i = 1; i < candidates.size(); i++) {
                 PickCandidate alternative = candidates.get(i);
                 if (!selectedLinkId.equals(alternative.linkId()) && alternative.distance() <= chosen.distance() + 1.25) {
@@ -1520,7 +1674,9 @@ public final class NetworkEditorPanel extends JPanel {
         );
     }
 
-    private static boolean intersectsViewport(LinkSegment link, ViewportBounds viewportBounds) {
+    private boolean intersectsViewport(LinkSegment link, ViewportBounds viewportBounds) {
+        var curve=geometryFor(link);
+        if(curve!=null)return curve.bounds().intersects(new org.locationtech.jts.geom.Envelope(viewportBounds.minX,viewportBounds.maxX,viewportBounds.minY,viewportBounds.maxY));
         double minLinkX = Math.min(link.fromX(), link.toX());
         double maxLinkX = Math.max(link.fromX(), link.toX());
         double minLinkY = Math.min(link.fromY(), link.toY());

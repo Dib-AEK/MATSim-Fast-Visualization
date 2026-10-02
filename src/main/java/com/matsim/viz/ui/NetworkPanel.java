@@ -920,6 +920,8 @@ public final class NetworkPanel extends JPanel {
         repaint();
     }
 
+    public DetailedNetworkGeometry sharedDetailedGeometry() { return detailedGeometry; }
+
     public SpatialGrid sharedSpatialIndex() { return spatialGrid; }
 
     public boolean isRenderingSuspended() {

@@ -31,6 +31,8 @@ import javafx.scene.control.CheckBox;
 import javafx.scene.control.ColorPicker;
 import javafx.scene.control.ComboBox;
 import javafx.scene.control.Label;
+import javafx.scene.control.ListView;
+import javafx.scene.control.ListCell;
 import javafx.scene.control.ScrollPane;
 import javafx.scene.control.Slider;
 import javafx.scene.control.Spinner;
@@ -776,6 +778,35 @@ public final class FxVisualizerApp extends Application {
         return card;
     }
 
+    private void showEditorValidation(javafx.stage.Window owner, NetworkEditorPanel editorPanel, java.util.Map<String, String> issues) {
+        runOnEdt(() -> editorPanel.highlightValidationIssues(issues));
+        Alert report = new Alert(issues.isEmpty() ? Alert.AlertType.INFORMATION : Alert.AlertType.WARNING);
+        report.initOwner(owner);
+        report.setTitle("Network validation");
+        report.setHeaderText(issues.isEmpty() ? "All links passed validation" : issues.size() + " links need correction; highlighted in pink");
+        if (!issues.isEmpty()) {
+            ListView<String> rows = new ListView<>(FXCollections.observableArrayList(issues.keySet().stream().sorted().toList()));
+            Label detail = new Label("Select a link to locate it. Edit it, then run Check invalid links again.");
+            detail.setWrapText(true);
+            rows.setCellFactory(view -> new ListCell<>() {
+                @Override protected void updateItem(String id, boolean empty) {
+                    super.updateItem(id, empty);
+                    setText(empty || id == null ? null : id + " ? " + issues.get(id));
+                }
+            });
+            rows.getSelectionModel().selectedItemProperty().addListener((obs, old, id) -> {
+                if (id != null) { detail.setText(id + ": " + issues.get(id)); runOnEdt(() -> editorPanel.findById(id, false)); }
+            });
+            Button edit = new Button("Edit selected link");
+            edit.disableProperty().bind(rows.getSelectionModel().selectedItemProperty().isNull());
+            edit.setOnAction(e -> { report.close(); runOnEdt(editorPanel::editSelectedLink); });
+            VBox content = new VBox(8, detail, rows, edit);
+            content.setPrefSize(AppDefaults.Editor.DIALOG_WIDTH_PIXELS, AppDefaults.Editor.DIALOG_HEIGHT_PIXELS);
+            report.getDialogPane().setContent(content);
+        }
+        report.show();
+    }
+
     private void openNetworkEditorWindow(Stage owner, SimulationModel model, NetworkPanel mainNetworkPanel) {
         if (editorLoading || editorActive) return;
         if (videoRecorder != null && (videoRecorder.isRecording() || videoRecorder.isEncoding())) {
@@ -796,7 +827,15 @@ public final class FxVisualizerApp extends Application {
         loadingRoot.getStyleClass().add("app-root");
         mainScene.setRoot(loadingRoot);
         Path editorCacheDir = startupCacheDir != null ? startupCacheDir : Path.of(AppDefaults.Paths.CACHE_DIR);
-        CompletableFuture.supplyAsync(() -> NetworkEditorPanel.prepare(model.networkData(), mainNetworkPanel.sharedSpatialIndex()))
+        var sharedGeometry = getOnEdt(mainNetworkPanel::sharedDetailedGeometry);
+        CompletableFuture.supplyAsync(() -> {
+            var geometry=sharedGeometry;
+            if(geometry==null)try {
+                var files=DetailedNetworkGeometry.discover(startupAppConfig==null?null:startupAppConfig.matsimConfigFile());
+                if(!files.isEmpty())geometry=DetailedNetworkGeometry.load(files.getFirst(),model.networkData());
+            }catch(java.io.IOException ex){System.err.println("Editor detailed geometry unavailable; using XML links: " + ex.getMessage());}
+            return NetworkEditorPanel.prepare(model.networkData(), mainNetworkPanel.sharedSpatialIndex(), geometry);
+        })
                 .whenComplete((prepared, error) -> Platform.runLater(() -> {
                     editorLoading = false;
                     if (applicationClosing) return;
@@ -953,6 +992,23 @@ public final class FxVisualizerApp extends Application {
             }
         });
 
+        Button validateNetworkButton = new Button("Check invalid links");
+        validateNetworkButton.setMaxWidth(Double.MAX_VALUE);
+        validateNetworkButton.setOnAction(e -> {
+            var snapshot = getOnEdt(editorPanel::snapshotForSave);
+            validateNetworkButton.setDisable(true);
+            editorSaving = true;
+            editorRoot.setDisable(true);
+            runOnEdt(() -> editorPanel.setEditingLocked(true));
+            CompletableFuture.supplyAsync(snapshot::validationIssues).whenComplete((issues, error) -> Platform.runLater(() -> {
+                validateNetworkButton.setDisable(false);
+                editorSaving = false;
+                editorRoot.setDisable(false);
+                runOnEdt(() -> editorPanel.setEditingLocked(false));
+                if (error == null) showEditorValidation(owner, editorPanel, issues);
+                else { var alert = new Alert(Alert.AlertType.ERROR, error.getMessage()); alert.initOwner(owner); alert.show(); }
+            }));
+        });
         Button saveNetworkButton = new Button("Save Modified Network");
         saveNetworkButton.getStyleClass().add("accent-button");
         saveNetworkButton.setMaxWidth(Double.MAX_VALUE);
@@ -987,6 +1043,10 @@ public final class FxVisualizerApp extends Application {
                             ok.initOwner(owner); ok.show();
                         } else {
                             Throwable cause = error.getCause() == null ? error : error.getCause();
+                            if (cause instanceof NetworkEditorPanel.NetworkValidationException invalid) {
+                                showEditorValidation(owner, editorPanel, invalid.issues());
+                                return;
+                            }
                             Alert err = new Alert(Alert.AlertType.ERROR, cause.getMessage());
                             err.initOwner(owner); err.setHeaderText("Save failed; your edits are retained"); err.show();
                         }
@@ -1024,10 +1084,18 @@ public final class FxVisualizerApp extends Application {
         mapSection.setExpanded(AppDefaults.Display.SECTIONS_EXPANDED);
         editorLinkModesCard.setExpanded(AppDefaults.Display.SECTIONS_EXPANDED);
         editorLinkModesCard.getStyleClass().remove("card");
+        CheckBox detailedLinks=new CheckBox("Use detailed link geometry (CSV)");
+        detailedLinks.setDisable(!getOnEdt(editorPanel::hasDetailedGeometry));
+        detailedLinks.setSelected(getOnEdt(editorPanel::isDetailedGeometryEnabled));
+        detailedLinks.setOnAction(e->{boolean enabled=detailedLinks.isSelected();runOnEdt(()->editorPanel.setDetailedGeometryEnabled(enabled));});
+        Label geometryHint=new Label("Double-click a link to edit. Every segment of a merged link is selected and edited together.");
+        geometryHint.setWrapText(true);
+        TitledPane geometrySection=new TitledPane("Detailed geometry",new VBox(8,detailedLinks,geometryHint));
+        geometrySection.setExpanded(AppDefaults.Display.SECTIONS_EXPANDED);
         VBox inspector = new VBox(10, selectedType, selectedId, selectedMeta,
                 editLinkButton, reverseLinkButton, createNodeButton, createLinkButton,
-                deleteLinkButton, deleteNodeButton, saveNetworkButton,
-                attributesSection, editorLinkModesCard, colorsSection, mapSection);
+                deleteLinkButton, deleteNodeButton, validateNetworkButton, saveNetworkButton,
+                attributesSection, editorLinkModesCard, colorsSection, geometrySection, mapSection);
         transitEditor = new TransitEditorPane(owner,editorPanel,startupTransitSchedule,startupTransitVehicles,locked->{
             editorSaving=locked;
             if(editorRoot!=null)editorRoot.setDisable(locked);
