@@ -41,7 +41,7 @@ public final class SimulationFingerprint {
             List<Path> sourceFiles = new ArrayList<>();
             sourceFiles.add(inputs.matsimConfigFile());
             sourceFiles.add(inputs.networkFile());
-            sourceFiles.add(inputs.populationFile());
+            if (inputs.populationFile() != null) sourceFiles.add(inputs.populationFile());
             sourceFiles.add(inputs.eventsFile());
             if (inputs.tripsFile() != null) {
                 sourceFiles.add(inputs.tripsFile());

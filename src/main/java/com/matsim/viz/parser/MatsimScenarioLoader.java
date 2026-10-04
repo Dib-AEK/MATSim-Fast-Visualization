@@ -52,9 +52,37 @@ public final class MatsimScenarioLoader {
         );
     }
 
+    /** Best-effort discovery for the launcher: missing files remain editable instead of aborting the scan. */
+    public record InputDiscovery(Map<String, Path> files, List<String> warnings) { }
+
+    public InputDiscovery discoverInputs(Path configFile) {
+        Path path = configFile.toAbsolutePath().normalize();
+        Config config = ConfigUtils.loadConfig(path.toString());
+        Map<String, Path> files = new java.util.LinkedHashMap<>();
+        List<String> warnings = new ArrayList<>();
+        java.util.function.BiConsumer<String, java.util.function.Supplier<Path>> find = (key, resolver) -> {
+            try { Path value = resolver.get(); if (value != null) files.put(key, value); }
+            catch (IllegalArgumentException ex) { warnings.add(ex.getMessage()); }
+        };
+        find.accept("network", () -> resolveNetworkFile(path, config));
+        find.accept("population", () -> resolvePopulationFile(path, config));
+        find.accept("events", () -> resolveEventsFile(path, config));
+        find.accept("trips", () -> resolveTripsFile(path, config));
+        find.accept("persons", () -> resolveOutputPersonsFile(path, config));
+        find.accept("plans", () -> resolveOutputPlansFile(path, config));
+        find.accept("schedule", () -> resolveTransitScheduleFile(path, config));
+        find.accept("vehicles", () -> resolveTransitVehiclesFile(new ResolvedSimulationInputs(path,
+                files.get("network"), files.get("population"), files.get("events"), files.get("trips"),
+                files.get("persons"), files.get("plans"), files.get("schedule"), config)));
+        return new InputDiscovery(files, warnings);
+    }
+
     public MatsimScenarioBundle load(ResolvedSimulationInputs inputs) {
-        Scenario scenario = ScenarioUtils.createScenario(inputs.matsimConfig());
-        ScenarioUtils.loadScenario(scenario);
+        // Only load the chosen visualization inputs, not unrelated scenario modules' file references.
+        Scenario scenario = ScenarioUtils.createScenario(ConfigUtils.createConfig());
+        new org.matsim.core.network.io.MatsimNetworkReader(scenario.getNetwork()).readFile(inputs.networkFile().toString());
+        if (inputs.populationFile() != null)
+            new org.matsim.core.population.io.PopulationReader(scenario).readFile(inputs.populationFile().toString());
         Map<String, VehicleMetadata> metadata = new HashMap<>(
                 PopulationMetadataExtractor.fromPopulation(scenario.getPopulation())
         );

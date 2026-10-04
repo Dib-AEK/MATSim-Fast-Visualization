@@ -15,6 +15,8 @@
         <maven.compiler.release>21</maven.compiler.release>
         <matsim.version>2026.0-2025w33</matsim.version>
         <javafx.version>21.0.4</javafx.version>
+        <javafx.platform>win</javafx.platform>
+        <exec.mainClass>com.matsim.viz.Main</exec.mainClass>
     </properties>
 
     <repositories>
@@ -39,19 +41,19 @@
             <groupId>org.openjfx</groupId>
             <artifactId>javafx-controls</artifactId>
             <version>${javafx.version}</version>
-            <classifier>win</classifier>
+            <classifier>${javafx.platform}</classifier>
         </dependency>
         <dependency>
             <groupId>org.openjfx</groupId>
             <artifactId>javafx-graphics</artifactId>
             <version>${javafx.version}</version>
-            <classifier>win</classifier>
+            <classifier>${javafx.platform}</classifier>
         </dependency>
         <dependency>
             <groupId>org.openjfx</groupId>
             <artifactId>javafx-swing</artifactId>
             <version>${javafx.version}</version>
-            <classifier>win</classifier>
+            <classifier>${javafx.platform}</classifier>
         </dependency>
         <dependency>
             <groupId>org.jcodec</groupId>
@@ -65,6 +67,18 @@
         </dependency>
     </dependencies>
 
+    <profiles>
+        <profile>
+            <id>linux</id>
+            <activation><os><name>Linux</name></os></activation>
+            <properties><javafx.platform>linux</javafx.platform></properties>
+        </profile>
+        <profile>
+            <id>linux-arm64</id>
+            <activation><os><name>Linux</name><arch>aarch64</arch></os></activation>
+            <properties><javafx.platform>linux-aarch64</javafx.platform></properties>
+        </profile>
+    </profiles>
     <build>
         <plugins>
             <plugin>
@@ -80,7 +94,7 @@
                 <artifactId>exec-maven-plugin</artifactId>
                 <version>3.5.0</version>
                 <configuration>
-                    <mainClass>com.matsim.viz.Main</mainClass>
+                    <mainClass>${exec.mainClass}</mainClass>
                 </configuration>
             </plugin>
             <plugin>
@@ -88,7 +102,7 @@
                 <artifactId>javafx-maven-plugin</artifactId>
                 <version>0.0.8</version>
                 <configuration>
-                    <mainClass>com.matsim.viz.Main</mainClass>
+                    <mainClass>${exec.mainClass}</mainClass>
                 </configuration>
             </plugin>
         </plugins>

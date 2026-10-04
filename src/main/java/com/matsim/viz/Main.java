@@ -38,11 +38,22 @@ public final class Main {
         RunOptions options = RunOptions.parse(args);
 
         Path configPath = Path.of(AppDefaults.Paths.APP_CONFIG).toAbsolutePath();
-        AppConfig config = ConfigLoader.load(configPath);
+        com.matsim.viz.launcher.LaunchSettings.Selection selection = null;
+        for (int i = 0; i < args.length; i++) {
+            if ("--launch-settings".equals(args[i])) {
+                if (++i >= args.length) throw new IllegalArgumentException("Missing launch settings path");
+                configPath = Path.of(args[i]);
+                selection = com.matsim.viz.launcher.LaunchSettings.resolve(
+                        com.matsim.viz.launcher.LaunchSettings.read(configPath));
+            }
+        }
+        AppConfig config = selection == null ? ConfigLoader.load(configPath) : selection.config();
         configureRenderingBackend(config);
         MatsimScenarioLoader scenarioLoader = new MatsimScenarioLoader();
-        ResolvedSimulationInputs inputs = scenarioLoader.resolveInputs(config);
-        String cacheKey = SimulationFingerprint.fromInputs(inputs);
+        ResolvedSimulationInputs inputs = selection == null ? scenarioLoader.resolveInputs(config) : selection.inputs();
+        boolean directCache = selection != null && selection.cacheKey() != null;
+        if (directCache) options = new RunOptions(false, options.buildCacheOnly(), true);
+        String cacheKey = directCache ? selection.cacheKey() : SimulationFingerprint.fromInputs(inputs);
         SimulationCacheStore cacheStore = new SimulationCacheStore(config.cacheDir());
 
         if (options.guiOnly && options.overwriteCache) {
@@ -217,7 +228,8 @@ public final class Main {
         }
         System.out.printf("Sample size: %.4f%n", sampleSize);
 
-        FxVisualizerApp.setTransitSources(inputs.transitScheduleFile(), MatsimScenarioLoader.resolveTransitVehiclesFile(inputs));
+        FxVisualizerApp.setTransitSources(inputs.transitScheduleFile(), selection == null
+                ? MatsimScenarioLoader.resolveTransitVehiclesFile(inputs) : selection.transitVehicles());
         FxVisualizerApp.launchVisualizer(model, playbackController, sampleSize, config.cacheDir(), config);
     }
 

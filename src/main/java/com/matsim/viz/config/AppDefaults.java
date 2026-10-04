@@ -23,6 +23,17 @@ public final class AppDefaults {
         public static final String APP_CONFIG = "config/app.properties";
     }
 
+    public static final class Launcher {
+        private Launcher() { }
+        public static final String USER_DIRECTORY = ".matsim-viz";
+        public static final int WIDTH_PIXELS = 940;
+        public static final int HEIGHT_PIXELS = 720;
+        public static final double SCREEN_FRACTION = 0.9;
+        public static final int SCAN_DELAY_MS = 600;
+        public static final String MODE = "files";
+        public static final String WORKER_MAX_HEAP = "-XX:MaxRAMPercentage=75.0";
+    }
+
     public static final class Playback {
         private Playback() { }
         public static final int START_SECONDS = 0;

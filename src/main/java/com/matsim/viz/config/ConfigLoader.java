@@ -16,6 +16,10 @@ public final class ConfigLoader {
             properties.load(stream);
         }
 
+        return load(properties);
+    }
+
+    public static AppConfig load(Properties properties) {
         Path matsimConfigFile = readOptionalPath(properties, "matsim.config.file");
 
         Path cacheDir = Path.of(properties.getProperty("cache.dir", AppDefaults.Paths.CACHE_DIR).trim());

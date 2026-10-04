@@ -236,3 +236,29 @@ remains invalid. Normalization changes only the exported copy; the manual check 
 reports raw editor values. Preserve all non-speed fields and native MATSim writing. `EditorValidationCheck` covers
 reporting, highlights, corrections/undo and preservation of a failed-save destination.
 The Swing link form is scrollable and screen-bounded; sizing defaults live in Editor.
+
+## Portable launcher and distribution
+
+`launcher/PortableLauncher` is a Swing bootstrap (EDT), with worker-based config
+scanning and cache listing. `MatsimScenarioLoader.discoverInputs` does partial native
+MATSim discovery so missing files can be supplied manually. `LaunchSettings` validates
+editable paths and constructs `ResolvedSimulationInputs`; `ConfigLoader.load(Properties)`
+shares all existing defaults. `Main --launch-settings <file>` accepts this selection.
+Explicit cache mode bypasses source resolution/fingerprinting but retains cache version
+checks. Its missing external timelines/schedules/sample-size settings are documented.
+The cache binary schema is unchanged; nullable population is omitted from fingerprints.
+Scenario loading uses native network/population readers for selected files, avoiding
+unrelated missing inputs in other config modules. Do not hand-parse scenario XML.
+The bootstrap starts a child JVM from `java.home`, preserving the packaged classpath;
+this permits retry/restart without attempting to relaunch JavaFX in the same JVM.
+Launcher settings/logs default to ~/.matsim-viz; tests override matsim.viz.userDir.
+Never put a user's last settings or actual scenario/cache data into the distribution.
+
+`scripts/build-portable.ps1` and `.sh` call the common Python build. JDK 21+, Maven
+and Python are build-only requirements. jlink retains java/java.exe for the child
+process. jpackage app-image needs no installer tool and embeds the runtime. Dependencies
+remain separate JARs to preserve MATSim/GeoTools service discovery. JavaFX classifiers
+follow host Windows/Linux; each OS/architecture must build its own native image.
+Outputs are unique target/portable-* folders; do not delete prior builds implicitly.
+`LauncherCheck` covers partial discovery, overrides, optional population, Unicode/space
+paths, selected cache creation and source-free cache loading with synthetic MATSim data.

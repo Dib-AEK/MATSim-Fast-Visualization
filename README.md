@@ -14,6 +14,63 @@ It shows multiple features, such as location of bottlenecks.
 
 <video src="images/recording_20260402_225814_1440p.mp4" controls width="100%"></video>
 
+## Portable application (no installation for recipients)
+
+Build on the operating system and CPU architecture you want to distribute to.
+The build machine needs a **redistributable JDK 21+**, Maven and Python 3. Set
+`JAVA_HOME` to that JDK; Windows and Linux recipients need none of these tools.
+
+Windows (PowerShell, repository root):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/build-portable.ps1
+```
+
+Linux:
+
+```bash
+bash scripts/build-portable.sh
+```
+
+The script prints the output folder under
+`target/portable-*/distribution/MATSimViz`. Share that **whole folder** (or zip it).
+Windows users double-click `MATSimViz.exe`; Linux users run `bin/MATSimViz`.
+Keep the runtime, application and dependency folders together. Linux needs a desktop
+session with JavaFX's GTK/display libraries. An `.exe` runs on Windows: Linux builds
+produce a Linux launcher. JDK `jpackage` does not cross-build Windows images on Linux.
+Build output retains the selected JDK's legal files and dependency JARs/license metadata;
+use a JDK whose redistribution terms permit your distribution.
+
+On opening the application:
+
+1. The startup window shows the default MATSim config from bundled `app/config/app.properties`
+   (Linux: `lib/app/config/app.properties`), or your last selection.
+2. Changing the config automatically scans it with MATSim's reader. Review or browse
+   the network, events, population, trips/persons CSVs, output plans, transit schedule
+   and transit vehicles. Missing paths remain editable. Only network/events and the
+   config are required; optional metadata can be cleared.
+3. Choose the cache folder and **Run visualization**. Existing matching caches are
+   reused; otherwise selected files are processed and cached there.
+4. Alternatively select **Existing cache**, choose its folder and select a
+   `.mviz.bin.gz` entry. This works without original inputs and rejects incompatible
+   caches with a startup error. Multiple caches are listed explicitly.
+
+Cache-only mode includes the cached network, movements, stops and person metadata.
+Detailed CSV geometry, external trip-purpose timelines, original sample-size settings,
+and editable transit schedules/vehicles require source files; use simulation-file mode
+for those features. Cache-only mode uses application defaults for display scaling.
+
+The launcher saves selections, logs and its default cache under `~/.matsim-viz`.
+It launches the viewer using its bundled Java, with up to 75% of system RAM available
+for large simulations. Startup failures show a log path; the startup window remains
+available for corrections/retries. No scenario files are modified by the launcher.
+Developer commands (`mvn exec:java`, `--build-cache`, `--gui-only`) still work as before.
+To open the new startup window from source, run:
+
+```powershell
+mvn -q exec:exec '-Dexec.executable=java' '-Dexec.args=-cp %classpath com.matsim.viz.launcher.PortableLauncher'
+```
+
 ## What It Visualizes
 
 - Vehicles moving through the network from origin to destination via link traversals.
