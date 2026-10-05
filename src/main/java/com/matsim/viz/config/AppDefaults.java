@@ -30,6 +30,7 @@ public final class AppDefaults {
         public static final int HEIGHT_PIXELS = 720;
         public static final double SCREEN_FRACTION = 0.9;
         public static final int SCAN_DELAY_MS = 600;
+        public static final int LOG_MAX_CHARACTERS = 40_000;
         public static final String MODE = "files";
         public static final String WORKER_MAX_HEAP = "-XX:MaxRAMPercentage=75.0";
     }

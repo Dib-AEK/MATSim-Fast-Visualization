@@ -107,6 +107,18 @@ public final class FxVisualizerApp extends Application {
             "Light theme CSS not found"
     ).toExternalForm();
 
+    private static Path startupDetailedGeometry;
+    private static boolean startupHasMovements;
+    public static void setDetailedGeometrySource(Path file) { startupDetailedGeometry = file; }
+    private static List<Path> detailedGeometryFiles() throws java.io.IOException {
+        return startupDetailedGeometry == null
+                ? DetailedNetworkGeometry.discover(startupAppConfig == null ? null : startupAppConfig.matsimConfigFile())
+                : List.of(startupDetailedGeometry);
+    }
+    private static boolean isAvailable(VisualizationLayerChoice choice) {
+        return startupHasMovements || choice.openNetworkEditor() || choice.label().equals("Network only");
+    }
+
     public static void launchVisualizer(
             SimulationModel model,
             PlaybackController playbackController,
@@ -115,6 +127,7 @@ public final class FxVisualizerApp extends Application {
             AppConfig appConfig
     ) {
         startupModel = Objects.requireNonNull(model, "model");
+        startupHasMovements = model.traversalCount() > 0;
         startupPlaybackController = Objects.requireNonNull(playbackController, "playbackController");
         startupSampleSize = sampleSize;
         startupCacheDir = cacheDir;
@@ -135,6 +148,10 @@ public final class FxVisualizerApp extends Application {
         runOnEdt(() -> networkPanel.setPreferredSize(new Dimension(AppDefaults.Window.NETWORK_WIDTH, AppDefaults.Window.NETWORK_HEIGHT)));
         runOnEdt(() -> networkPanel.setSampleSize(startupSampleSize));
         applyStartupDefaults(networkPanel);
+        if (!startupHasMovements) runOnEdt(() -> {
+            networkPanel.setVisualizationMode(NetworkPanel.VisualizationMode.VEHICLES);
+            networkPanel.setSelectedLinkModes(new java.util.LinkedHashSet<>(model.availableLinkModes()));
+        });
         heatmapPreprocessExecutor = Executors.newSingleThreadExecutor(r -> {
             Thread thread = new Thread(r, "heatmap-preprocess");
             thread.setDaemon(true);
@@ -161,11 +178,12 @@ public final class FxVisualizerApp extends Application {
         scene.getStylesheets().add(getOnEdt(networkPanel::isDarkTheme) ? DARK_CSS : LIGHT_CSS);
         this.mainScene = scene;
 
-        stage.setTitle("MATSim Visualizer - JavaFX");
+        stage.setTitle(startupHasMovements ? "MATSim Visualizer - JavaFX" : "MATSim Network Viewer");
         stage.setScene(scene);
         stage.setMinWidth(AppDefaults.Window.MIN_WIDTH);
         stage.setMinHeight(AppDefaults.Window.MIN_HEIGHT);
         stage.show();
+        System.out.println("[Startup] Viewer ready");
 
         AnimationTimer animation = createAnimationTimer(playbackController, networkPanel, topBar.uiState());
         animation.start();
@@ -451,6 +469,12 @@ public final class FxVisualizerApp extends Application {
                 toolbarGroup(rendererCaption, rendererValue)
         );
 
+        if (!startupHasMovements) {
+            for (javafx.scene.control.Control control : List.of(playPauseButton, recordButton, timeSlider, speedSlider, qualityCombo)) {
+                control.setDisable(true);
+                control.setTooltip(new javafx.scene.control.Tooltip("Requires simulation movements. Load events or a processed simulation cache."));
+            }
+        }
         final boolean[] syncing = {false};
         final double[] pendingSeek = {Double.NaN};
         timeSlider.valueProperty().addListener((obs, oldValue, newValue) -> {
@@ -489,6 +513,15 @@ public final class FxVisualizerApp extends Application {
         ComboBox<VisualizationLayerChoice> visualizationModeCombo = new ComboBox<>(
             FXCollections.observableArrayList(buildVisualizationChoices())
         );
+        visualizationModeCombo.setId("visualization-choice");
+        visualizationModeCombo.setCellFactory(list -> new ListCell<>() {
+            @Override protected void updateItem(VisualizationLayerChoice value, boolean empty) {
+                super.updateItem(value, empty);
+                setText(empty || value == null ? null : value.label());
+                setDisable(!empty && value != null && !isAvailable(value));
+                setTooltip(isDisabled() ? new javafx.scene.control.Tooltip("Requires simulation movements") : null);
+            }
+        });
         visualizationModeCombo.setMaxWidth(Double.MAX_VALUE);
         visualizationModeCombo.setValue(choiceForMode(getOnEdt(networkPanel::getVisualizationMode)));
         final boolean[] applyingVisualizationChoice = {false};
@@ -497,6 +530,12 @@ public final class FxVisualizerApp extends Application {
                 return;
             }
 
+            if (!isAvailable(newValue)) {
+                applyingVisualizationChoice[0] = true;
+                visualizationModeCombo.setValue(oldValue);
+                applyingVisualizationChoice[0] = false;
+                return;
+            }
             if (newValue.openNetworkEditor()) {
                 openNetworkEditorWindow(owner, model, networkPanel);
                 applyingVisualizationChoice[0] = true;
@@ -518,7 +557,7 @@ public final class FxVisualizerApp extends Application {
         TitledPane networkModesCard = buildModeSelectionCard(
                 "Network Modes",
                 model.availableLinkModes(),
-            model.defaultTransportModes(model.availableLinkModes()),
+            startupHasMovements ? model.defaultTransportModes(model.availableLinkModes()) : new java.util.LinkedHashSet<>(model.availableLinkModes()),
                 model::isPublicTransportMode,
                 selected -> runOnEdt(() -> networkPanel.setSelectedLinkModes(selected))
         );
@@ -579,6 +618,11 @@ public final class FxVisualizerApp extends Application {
         VBox displaySettingsCard = buildDisplaySettingsCard(owner, model, networkPanel);
         VBox appearanceCard = buildAppearanceCard(owner, networkPanel);
         VBox bottleneckCard = buildBottleneckCard(networkPanel);
+        if (!startupHasMovements) {
+            visualizationCard.getChildren().add(new Label("Network only - simulation data not loaded."));
+            for (Node card : List.of(tripModesCard, heatmapTripModesCard, ptStopModesCard, heatmapSettingsCard,
+                    flowHeatmapColorsCard, speedHeatmapColorsCard, speedRatioHeatmapColorsCard, ptStopBubbleSizeCard, bottleneckCard)) card.setDisable(true);
+        }
 
         content.getChildren().addAll(
             visualizationCard,
@@ -665,7 +709,7 @@ public final class FxVisualizerApp extends Application {
 
         visualizationModeCombo.valueProperty().addListener((obs, oldValue, newValue) -> {
             refreshModePanels.run();
-            if (newValue == null || newValue.openNetworkEditor() || applyingVisualizationChoice[0]
+            if (newValue == null || !isAvailable(newValue) || newValue.openNetworkEditor() || applyingVisualizationChoice[0]
                     || newValue.mode() == NetworkPanel.VisualizationMode.VEHICLES) return;
             TitledPane settings = (TitledPane) sectionHeaders.get(heatmapSettingsCard);
             settings.setAnimated(false);
@@ -831,7 +875,7 @@ public final class FxVisualizerApp extends Application {
         CompletableFuture.supplyAsync(() -> {
             var geometry=sharedGeometry;
             if(geometry==null)try {
-                var files=DetailedNetworkGeometry.discover(startupAppConfig==null?null:startupAppConfig.matsimConfigFile());
+                var files=detailedGeometryFiles();
                 if(!files.isEmpty())geometry=DetailedNetworkGeometry.load(files.getFirst(),model.networkData());
             }catch(java.io.IOException ex){System.err.println("Editor detailed geometry unavailable; using XML links: " + ex.getMessage());}
             return NetworkEditorPanel.prepare(model.networkData(), mainNetworkPanel.sharedSpatialIndex(), geometry);
@@ -1109,7 +1153,7 @@ public final class FxVisualizerApp extends Application {
         inspector.setPrefWidth(360);
         inspector.getStyleClass().add("side-content");
 
-        Button back = new Button("Back to simulation");
+        Button back = new Button(startupHasMovements ? "Back to simulation" : "Back to network");
         back.setOnAction(e -> {
             runOnEdt(() -> editorPanel.setActive(false));
             mainScene.setRoot(visualizationRoot);
@@ -1319,7 +1363,7 @@ public final class FxVisualizerApp extends Application {
         VBox box=new VBox(6,enabled,status);
         enabled.setOnAction(e->runOnEdt(()->panel.setDetailedGeometryEnabled(enabled.isSelected())));
         CompletableFuture.supplyAsync(()->{
-            try{return DetailedNetworkGeometry.discover(startupAppConfig==null?null:startupAppConfig.matsimConfigFile());}
+            try{return detailedGeometryFiles();}
             catch(Exception ex){throw new java.util.concurrent.CompletionException(ex);}
         }).whenComplete((files,error)->Platform.runLater(()->{
             if(applicationClosing)return;
@@ -1844,6 +1888,7 @@ public final class FxVisualizerApp extends Application {
 
     private static List<VisualizationLayerChoice> buildVisualizationChoices() {
         List<VisualizationLayerChoice> choices = new ArrayList<>();
+        if (!startupHasMovements) choices.add(new VisualizationLayerChoice("Network only", NetworkPanel.VisualizationMode.VEHICLES, false));
         for (NetworkPanel.VisualizationMode mode : NetworkPanel.VisualizationMode.values()) {
             choices.add(new VisualizationLayerChoice(mode.toString(), mode, false));
         }
@@ -1852,6 +1897,7 @@ public final class FxVisualizerApp extends Application {
     }
 
     private static VisualizationLayerChoice choiceForMode(NetworkPanel.VisualizationMode mode) {
+        if (!startupHasMovements) return new VisualizationLayerChoice("Network only", NetworkPanel.VisualizationMode.VEHICLES, false);
         NetworkPanel.VisualizationMode safeMode = mode == null ? NetworkPanel.VisualizationMode.VEHICLES : mode;
         return new VisualizationLayerChoice(safeMode.toString(), safeMode, false);
     }
@@ -2308,6 +2354,8 @@ public final class FxVisualizerApp extends Application {
     private AnimationTimer createAnimationTimer(PlaybackController playbackController, NetworkPanel networkPanel, PlaybackUiState uiState) {
         return new AnimationTimer() {
             private long previousNanos = -1L;
+            private final java.util.concurrent.atomic.AtomicBoolean repaintPending =
+                    new java.util.concurrent.atomic.AtomicBoolean();
             private final java.util.concurrent.atomic.AtomicBoolean presentationFramePending =
                     new java.util.concurrent.atomic.AtomicBoolean();
 
@@ -2318,7 +2366,7 @@ public final class FxVisualizerApp extends Application {
                     double target = uiState.pendingSeek()[0]; uiState.pendingSeek()[0] = Double.NaN;
                     playbackController.seek(target);
                     previousNanos = now;
-                    runOnEdt(networkPanel::repaint);
+                    networkPanel.repaint();
                     return;
                 }
                 if (editorActive || editorLoading) { previousNanos = now; return; }
@@ -2329,14 +2377,14 @@ public final class FxVisualizerApp extends Application {
 
                 if (heatmapPreprocessInProgress) {
                     previousNanos = now;
-                    runOnEdt(networkPanel::repaint);
+                    networkPanel.repaint();
                     return;
                 }
 
                 if (videoRecorder.isPresentationRecording()) {
                     previousNanos = now;
                     if (!presentationFramePending.compareAndSet(false, true)) return;
-                    runOnEdt(() -> {
+                    SwingUtilities.invokeLater(() -> {
                         try {
                             if (videoRecorder.isPresentationRecording() && !networkPanel.isRenderingSuspended()) {
                                 // Advance by one video frame, regardless of how long rendering takes.
@@ -2373,14 +2421,13 @@ public final class FxVisualizerApp extends Application {
                 uiState.timeValue().setText(TimeFormat.hhmmss(playbackController.getCurrentTime()));
                 uiState.playPauseButton().setText(playbackController.isPlaying() ? "Pause" : "Play");
 
-                runOnEdt(() -> {
-                    if (networkPanel.isRenderingSuspended()) {
-                        return;
-                    }
-                    networkPanel.repaint();
-                    if (videoRecorder.isRecording()) {
-                        videoRecorder.captureFrame(networkPanel);
-                    }
+                // A slow Swing paint must never block JavaFX pulses or queue unlimited work.
+                if (repaintPending.compareAndSet(false, true)) SwingUtilities.invokeLater(() -> {
+                    try {
+                        if (networkPanel.isRenderingSuspended()) return;
+                        networkPanel.repaint();
+                        if (videoRecorder.isRecording()) videoRecorder.captureFrame(networkPanel);
+                    } finally { repaintPending.set(false); }
                 });
             }
         };

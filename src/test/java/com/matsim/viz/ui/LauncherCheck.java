@@ -15,7 +15,7 @@ import java.util.*;
 public final class LauncherCheck {
     static void check(boolean valid,String text){if(!valid)throw new AssertionError(text);}
     public static void main(String[] args)throws Exception{
-        Path dir=Files.createTempDirectory(Path.of("target").toAbsolutePath(),"launcher space é ");
+        Path dir=Files.createTempDirectory(Path.of("target").toAbsolutePath(),"launcher space Ã© ");
         var config=ConfigUtils.createConfig();config.network().setInputFile("missing.xml");
         config.plans().setInputFile("missing-population.xml");config.controller().setOutputDirectory("output");
         Path xml=dir.resolve("config.xml");new ConfigWriter(config).write(xml.toString());
@@ -49,6 +49,22 @@ public final class LauncherCheck {
         LaunchSettings.write(session,settings);Main.main(new String[]{"--launch-settings",session.toString(),"--build-cache"});
         settings.setProperty("launch.mode","files");boolean rejected=false;try{LaunchSettings.resolve(settings);}catch(IllegalArgumentException ex){rejected=true;}
         check(rejected,"Missing config was accepted in file mode");
-        System.out.println("PASS: native partial discovery, editable paths, optional metadata, spaces/Unicode, cache build and source-free cache loading. "+dir);
+        settings.setProperty("launch.mode","network");settings.setProperty("input.network",net.toString());
+        settings.setProperty("input.events",dir.resolve("missing-events.xml").toString());
+        settings.setProperty("cache.dir", "");
+        var networkOnly=LaunchSettings.resolve(settings);
+        check(networkOnly.networkOnly() && networkOnly.inputs().eventsFile()==null && networkOnly.inputs().matsimConfigFile()==null,
+                "Network-only startup retained stale simulation inputs");
+        Path csv=dir.resolve("custom-curves.csv");
+        Files.writeString(csv,"link_id,geometry\nroad,\"LINESTRING(0 0,50 20,100 0)\"\n");
+        settings.setProperty("input.geometry",csv.toString());
+        networkOnly=LaunchSettings.resolve(settings);
+        check(networkOnly.detailedGeometry().equals(csv),"Explicit geometry ignored");
+        var geometry=DetailedNetworkGeometry.load(csv,new MatsimNetworkParser().parse(net));
+        check(geometry.size()==1,"Network-only curve did not load");
+        Path networkSession=dir.resolve("network-only.properties");LaunchSettings.write(networkSession,settings);
+        Main.main(new String[]{"--launch-settings",networkSession.toString(),"--build-cache"});
+        check(LaunchSettings.caches(dir.resolve("cache")).size()==1,"Network-only mode created simulation cache");
+        System.out.println("PASS: native partial discovery, editable paths, optional metadata, spaces/Unicode, cache build and source-free cache loading, network-only XML and explicit CSV. "+dir);
     }
 }

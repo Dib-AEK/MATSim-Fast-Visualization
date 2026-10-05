@@ -13,7 +13,9 @@ import java.util.*;
 public final class LaunchSettings {
     private LaunchSettings() { }
     public static final String CACHE_SUFFIX = ".mviz.bin.gz";
-    public record Selection(AppConfig config, ResolvedSimulationInputs inputs, String cacheKey, Path transitVehicles) { }
+    public record Selection(AppConfig config, ResolvedSimulationInputs inputs, String cacheKey, Path transitVehicles, Path detailedGeometry) {
+        public boolean networkOnly() { return cacheKey == null && inputs.eventsFile() == null; }
+    }
 
     public static Properties read(Path file) throws IOException {
         Properties result = new Properties();
@@ -44,8 +46,20 @@ public final class LaunchSettings {
     public static Selection resolve(Properties settings) {
         Properties p = new Properties(); p.putAll(settings);
         String cacheDir = p.getProperty("cache.dir", "").trim();
+        boolean networkOnly = "network".equals(p.getProperty("launch.mode"));
+        if (cacheDir.isEmpty() && networkOnly) cacheDir = Path.of(System.getProperty("user.home"),
+                AppDefaults.Launcher.USER_DIRECTORY, AppDefaults.Paths.CACHE_DIR).toString();
         if (cacheDir.isEmpty()) throw new IllegalArgumentException("Choose a cache folder");
         p.setProperty("cache.dir", Path.of(cacheDir).toAbsolutePath().normalize().toString());
+        Path geometry = path(p, "input.geometry", false);
+        if (networkOnly) {
+            Path network = path(p, "input.network", true);
+            p.remove("matsim.config.file");
+            var config = ConfigUtils.createConfig();
+            config.network().setInputFile(network.toString());
+            return new Selection(ConfigLoader.load(p), new ResolvedSimulationInputs(null, network, null, null,
+                    null, null, null, null, config), null, null, geometry);
+        }
         if ("cache".equals(p.getProperty("launch.mode", AppDefaults.Launcher.MODE))) {
             Path file = path(p, "launch.cache.file", true);
             String name = file.getFileName().toString();
@@ -53,7 +67,7 @@ public final class LaunchSettings {
             p.setProperty("cache.dir", file.getParent().toString());
             p.remove("matsim.config.file");
             return new Selection(ConfigLoader.load(p), new ResolvedSimulationInputs(null, null, null, null,
-                    null, null, null, null, ConfigUtils.createConfig()), name.substring(0, name.length()-CACHE_SUFFIX.length()), null);
+                    null, null, null, null, ConfigUtils.createConfig()), name.substring(0, name.length()-CACHE_SUFFIX.length()), null, geometry);
         }
         Path configFile = path(p, "matsim.config.file", true);
         p.setProperty("matsim.config.file", configFile.toString());
@@ -68,6 +82,6 @@ public final class LaunchSettings {
         config.transit().setVehiclesFile(vehicles == null ? null : vehicles.toString());
         config.transit().setUseTransit(schedule != null);
         return new Selection(ConfigLoader.load(p), new ResolvedSimulationInputs(configFile, network, population, events,
-                trips, persons, plans, schedule, config), null, vehicles);
+                trips, persons, plans, schedule, config), null, vehicles, geometry);
     }
 }

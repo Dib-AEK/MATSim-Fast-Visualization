@@ -55,16 +55,35 @@ On opening the application:
    `.mviz.bin.gz` entry. This works without original inputs and rejects incompatible
    caches with a startup error. Multiple caches are listed explicitly.
 
+5. Select **Network only** to open a network XML/XML.GZ without a config or events.
+   Optionally choose **Detailed geometry CSV** (any filename). The network viewer
+   supports pan/zoom, map backgrounds and appearance settings; choose **Network Editor**
+   from Visualization to edit and save. CSV curves start enabled when usable and can
+   be toggled off. Merged links keep their complete selectable geometry.
+   Playback, recording, vehicle animation and volume/speed heatmaps stay visible but
+   disabled without movement data. Network-only loading does not create an events cache.
+   Unused config/event paths from the previous session are ignored.
+
+The **Detailed geometry CSV** field also overrides automatic discovery in simulation
+mode and can provide curves alongside an existing cache. Leave it empty to retain
+automatic discovery beside a simulation config.
+
 Cache-only mode includes the cached network, movements, stops and person metadata.
-Detailed CSV geometry, external trip-purpose timelines, original sample-size settings,
-and editable transit schedules/vehicles require source files; use simulation-file mode
-for those features. Cache-only mode uses application defaults for display scaling.
+Detailed CSV geometry can be supplied separately. External trip-purpose timelines,
+original sample-size settings and editable transit schedules/vehicles require source
+files; use simulation-file mode for those features. Cache-only mode uses application defaults for display scaling.
 
 The launcher saves selections, logs and its default cache under `~/.matsim-viz`.
 It launches the viewer using its bundled Java, with up to 75% of system RAM available
-for large simulations. Startup failures show a log path; the startup window remains
+for large simulations. While loading, the window shows the current stage and a live,
+scrollable log (the full log is retained on disk). Large simulations may take several
+minutes to process and index; network-only mode skips event processing.
+Startup failures show a log path; the startup window remains
 available for corrections/retries. No scenario files are modified by the launcher.
-Developer commands (`mvn exec:java`, `--build-cache`, `--gui-only`) still work as before.
+Running `Main` without arguments (including `mvn exec:java` or an IDE Run button)
+opens this startup window. Choose **Network only** to load just XML and optional CSV.
+Explicit `--build-cache`, `--gui-only`, and `--overwrite-cache` commands retain their
+direct processing behavior; the launcher's `--launch-settings` child opens the viewer.
 To open the new startup window from source, run:
 
 ```powershell
@@ -452,6 +471,9 @@ New links or links whose endpoints move use straight geometry; CSV files are not
   allowed modes (for example `car,bus` or `bus`). Speeds are saved in MATSim's m/s.
   Length, speed, lane count and capacity must be finite and strictly positive; at least
   one mode is required. Invalid input keeps the form open with your entered values.
+  The **Stored attributes** tab lists every stored attribute, including custom metadata
+  and `old_link_id`. Select a row to read/copy its complete value. This table is read-only;
+  the existing extra-attributes patch on the properties tab can add/update attributes.
 - **Add reverse direction** copies the selected link's parameters with reversed endpoints
   and a new unique ID. Each direction can then be edited independently.
 - Create/delete nodes and links; **Undo / Redo** retains the last 50 edits without

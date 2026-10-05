@@ -810,6 +810,35 @@ public final class NetworkEditorPanel extends JPanel {
         return removedLinks;
     }
 
+    private static JPanel storedAttributesPanel(LinkSegment link) {
+        var model = new javax.swing.table.DefaultTableModel(new String[]{"Attribute", "Stored value"}, 0) {
+            @Override public boolean isCellEditable(int row, int column) { return false; }
+        };
+        link.attributes().entrySet().stream().sorted(Map.Entry.comparingByKey())
+                .forEach(entry -> model.addRow(new Object[]{entry.getKey(), entry.getValue()}));
+        var table = new javax.swing.JTable(model);
+        table.setSelectionMode(javax.swing.ListSelectionModel.SINGLE_SELECTION);
+        table.setAutoCreateRowSorter(true);
+        table.setFillsViewportHeight(true);
+        var value = new JTextArea(4, 28);
+        value.setEditable(false);
+        value.setLineWrap(true);
+        value.setWrapStyleWord(true);
+        table.getSelectionModel().addListSelectionListener(event -> {
+            int row = table.getSelectedRow();
+            value.setText(row < 0 ? "" : String.valueOf(table.getValueAt(row, 1)));
+            value.setCaretPosition(0);
+        });
+        var panel = new JPanel(new java.awt.BorderLayout(8, 8));
+        panel.setBorder(BorderFactory.createEmptyBorder(8, 8, 8, 8));
+        panel.add(new JLabel(model.getRowCount() == 0 ? "No stored link attributes."
+                : "Select an attribute to read or copy its full value."), java.awt.BorderLayout.NORTH);
+        panel.add(new JScrollPane(table), java.awt.BorderLayout.CENTER);
+        panel.add(new JScrollPane(value), java.awt.BorderLayout.SOUTH);
+        if (model.getRowCount() > 0) table.setRowSelectionInterval(0, 0);
+        return panel;
+    }
+
     public boolean editSelectedLink() {
         if (!hasSelectedLink()) {
             return false;
@@ -858,8 +887,12 @@ public final class NetworkEditorPanel extends JPanel {
                 : getGraphicsConfiguration().getBounds();
         form.setPreferredSize(new Dimension(Math.min(AppDefaults.Editor.DIALOG_WIDTH_PIXELS, (int)(screen.width * AppDefaults.Editor.DIALOG_SCREEN_FRACTION)),
                 Math.min(AppDefaults.Editor.DIALOG_HEIGHT_PIXELS, (int)(screen.height * AppDefaults.Editor.DIALOG_SCREEN_FRACTION))));
+        var tabs = new javax.swing.JTabbedPane();
+        tabs.addTab("Link properties", form);
+        tabs.addTab("Stored attributes (" + existing.attributes().size() + ")", storedAttributesPanel(existing));
+        tabs.setPreferredSize(form.getPreferredSize());
         while (true) {
-            int choice = JOptionPane.showConfirmDialog(this, form, "Quick Edit Link", JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
+            int choice = JOptionPane.showConfirmDialog(this, tabs, "Quick Edit Link", JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
             if (choice != JOptionPane.OK_OPTION) {
                 return false;
             }

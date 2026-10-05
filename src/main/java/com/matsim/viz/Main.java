@@ -34,8 +34,13 @@ public final class Main {
     }
 
     public static void main(String[] args) throws Exception {
+        if (args.length == 0) {
+            com.matsim.viz.launcher.PortableLauncher.main(args);
+            return;
+        }
         long startNanos = System.nanoTime();
         RunOptions options = RunOptions.parse(args);
+        System.out.println("[Startup] Resolving input files...");
 
         Path configPath = Path.of(AppDefaults.Paths.APP_CONFIG).toAbsolutePath();
         com.matsim.viz.launcher.LaunchSettings.Selection selection = null;
@@ -51,16 +56,17 @@ public final class Main {
         configureRenderingBackend(config);
         MatsimScenarioLoader scenarioLoader = new MatsimScenarioLoader();
         ResolvedSimulationInputs inputs = selection == null ? scenarioLoader.resolveInputs(config) : selection.inputs();
+        boolean networkOnly = selection != null && selection.networkOnly();
         boolean directCache = selection != null && selection.cacheKey() != null;
         if (directCache) options = new RunOptions(false, options.buildCacheOnly(), true);
-        String cacheKey = directCache ? selection.cacheKey() : SimulationFingerprint.fromInputs(inputs);
+        String cacheKey = networkOnly ? null : directCache ? selection.cacheKey() : SimulationFingerprint.fromInputs(inputs);
         SimulationCacheStore cacheStore = new SimulationCacheStore(config.cacheDir());
 
         if (options.guiOnly && options.overwriteCache) {
             throw new IllegalArgumentException("Cannot combine --gui-only with --overwrite-cache");
         }
 
-        if (options.overwriteCache) {
+        if (options.overwriteCache && !networkOnly) {
             cacheStore.delete(cacheKey);
             System.out.println("Deleted cache entry for key: " + cacheKey);
         }
@@ -80,8 +86,14 @@ public final class Main {
         boolean loadedFromCache = false;
         boolean cacheInvalidated = false;
 
-        if (cacheStore.exists(cacheKey) && !options.overwriteCache) {
+        if (networkOnly) {
+            System.out.println("[Startup] Reading network...");
+            var network = new com.matsim.viz.parser.MatsimNetworkParser().parse(inputs.networkFile());
+            cached = new CachedSimulationData(network, new com.matsim.viz.domain.VehicleTraversal[0],
+                    Map.of(), Map.of(), Map.of(), Map.of(), new com.matsim.viz.domain.PtStopInteraction[0]);
+        } else if (cacheStore.exists(cacheKey) && !options.overwriteCache) {
             try {
+                System.out.println("[Startup] Loading processed cache...");
                 long cacheLoadStart = System.nanoTime();
                 cached = cacheStore.load(cacheKey);
                 loadedFromCache = true;
@@ -112,6 +124,7 @@ public final class Main {
                 System.out.println("Rebuilding cache due to cache format/code changes...");
             }
 
+            System.out.println("[Startup] Reading network and population...");
             long t1 = System.nanoTime();
             MatsimScenarioBundle scenarioBundle = scenarioLoader.load(inputs);
             long t2 = System.nanoTime();
@@ -125,6 +138,7 @@ public final class Main {
                         transitScheduleData.stopsById().size());
             }
 
+            System.out.println("[Startup] Processing simulation events (large scenarios can take several minutes)...");
             EventsParseResult events = new MatsimEventsProcessor().readTraversals(
                     inputs.eventsFile(),
                     transitScheduleData.vehicleToMode()
@@ -146,6 +160,7 @@ public final class Main {
                     events.ptStopInteractions()
             );
 
+            System.out.println("[Startup] Saving processed cache...");
             long saveStart = System.nanoTime();
             cacheStore.save(cacheKey, cached);
             long saveEnd = System.nanoTime();
@@ -157,7 +172,9 @@ public final class Main {
         }
 
         if (options.buildCacheOnly) {
-            if (loadedFromCache) {
+            if (networkOnly) {
+                System.out.println("Network loaded; network-only mode does not create an events cache.");
+            } else if (loadedFromCache) {
                 System.out.println("Cache is already available. Build-cache mode finished.");
             } else {
                 System.out.println("Cache created. Build-cache mode finished.");
@@ -166,6 +183,7 @@ public final class Main {
             return;
         }
 
+        System.out.println("[Startup] Loading trip metadata...");
         Map<String, List<TripPurposeWindow>> tripPurposeWindowsByPerson = Collections.emptyMap();
         if (inputs.tripsFile() != null) {
             try {
@@ -185,6 +203,7 @@ public final class Main {
             }
         }
 
+        System.out.printf("[Startup] Indexing %,d vehicle traversals...%n", cached.traversals().length);
         SimulationModel model = new SimulationModel(
                 cached.networkData(),
                 cached.traversals(),
@@ -228,8 +247,10 @@ public final class Main {
         }
         System.out.printf("Sample size: %.4f%n", sampleSize);
 
+        FxVisualizerApp.setDetailedGeometrySource(selection == null ? null : selection.detailedGeometry());
         FxVisualizerApp.setTransitSources(inputs.transitScheduleFile(), selection == null
                 ? MatsimScenarioLoader.resolveTransitVehiclesFile(inputs) : selection.transitVehicles());
+        System.out.println("[Startup] Opening visualization window...");
         FxVisualizerApp.launchVisualizer(model, playbackController, sampleSize, config.cacheDir(), config);
     }
 
